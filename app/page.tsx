@@ -172,17 +172,64 @@ export default function Home() {
         }),
       });
 
-      const result = await response.json();
+      // Check if it's a streaming response
+      const contentType = response.headers.get('content-type');
 
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to generate content');
+      if (contentType?.includes('text/event-stream')) {
+        // Handle streaming response
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let content = '';
+
+        setOutput({
+          content: '',
+          format: activeSkill.outputFormat,
+        });
+        setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed.text) {
+                    content += parsed.text;
+                    setOutput({
+                      content,
+                      format: activeSkill.outputFormat,
+                    });
+                  }
+                } catch {
+                  // Skip invalid JSON
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // Handle regular JSON response (for errors)
+        const result = await response.json();
+
+        if (!response.ok) {
+          throw new Error(result.error || 'Failed to generate content');
+        }
+
+        setOutput({
+          content: result.content,
+          format: activeSkill.outputFormat,
+        });
+        setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
       }
-
-      setOutput({
-        content: result.content,
-        format: activeSkill.outputFormat,
-      });
-      setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
     } catch (err: any) {
       setOutput({
         content: `Error: ${err.message}`,
