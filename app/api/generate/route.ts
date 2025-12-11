@@ -11,7 +11,7 @@ type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
 export async function POST(request: NextRequest) {
   try {
-    const { systemPrompt, userPrompt, images, pdfs } = await request.json();
+    const { systemPrompt, userPrompt, images } = await request.json();
 
     if (!systemPrompt || !userPrompt) {
       return NextResponse.json(
@@ -27,8 +27,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build the message content array with proper Anthropic types
-    const messageContent: Anthropic.MessageCreateParams['messages'][0]['content'] = [];
+    // Build the message content array
+    const messageContent: (
+      | Anthropic.TextBlockParam
+      | Anthropic.ImageBlockParam
+    )[] = [];
 
     // Add images if provided
     if (images && Array.isArray(images)) {
@@ -38,7 +41,7 @@ export async function POST(request: NextRequest) {
         const validMediaTypes: ImageMediaType[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
         if (validMediaTypes.includes(mediaType as ImageMediaType)) {
-          (messageContent as Anthropic.ImageBlockParam[]).push({
+          messageContent.push({
             type: 'image',
             source: {
               type: 'base64',
@@ -50,22 +53,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Add PDFs if provided (Claude supports PDF documents via base64)
-    if (pdfs && Array.isArray(pdfs)) {
-      for (const pdf of pdfs) {
-        (messageContent as Anthropic.DocumentBlockParam[]).push({
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: 'application/pdf',
-            data: pdf.data,
-          },
-        });
-      }
-    }
-
     // Add the text prompt
-    (messageContent as Anthropic.TextBlockParam[]).push({
+    messageContent.push({
       type: 'text',
       text: userPrompt,
     });
