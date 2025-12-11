@@ -138,7 +138,6 @@ export default function Home() {
       // Build file context for the prompt
       let fileContext = '';
       const imageContents: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
-      const pdfContents: Array<{ data: string; name: string }> = [];
 
       for (const uploadedFile of uploadedFiles) {
         if (uploadedFile.type === 'image' && uploadedFile.base64) {
@@ -152,15 +151,6 @@ export default function Home() {
                 media_type: matches[1],
                 data: matches[2],
               },
-            });
-          }
-        } else if (uploadedFile.type === 'pdf' && uploadedFile.base64) {
-          // Extract base64 data for PDF
-          const matches = uploadedFile.base64.match(/^data:(.+);base64,(.+)$/);
-          if (matches) {
-            pdfContents.push({
-              data: matches[2],
-              name: uploadedFile.file.name,
             });
           }
         }
@@ -179,7 +169,6 @@ export default function Home() {
           systemPrompt: activeSkill.systemPrompt,
           userPrompt,
           images: imageContents.length > 0 ? imageContents : undefined,
-          pdfs: pdfContents.length > 0 ? pdfContents : undefined,
         }),
       });
 
