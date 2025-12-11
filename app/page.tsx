@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { skills, Skill } from './skills-data';
 import styles from './page.module.css';
 
@@ -10,6 +10,11 @@ interface UploadedFile {
   preview?: string;
   base64?: string;
   type: 'image' | 'pdf';
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 export default function Home() {
@@ -23,7 +28,18 @@ export default function Home() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [urlContent, setUrlContent] = useState<string>('');
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   const updateField = (skillId: string, fieldName: string, value: any) => {
     setFormData((prev) => ({
@@ -53,6 +69,39 @@ export default function Home() {
     setTheme(newTheme);
     document.documentElement.setAttribute('data-theme', newTheme);
   };
+
+  // Fetch URL content
+  const fetchUrlContent = async (url: string) => {
+    if (!url || !url.startsWith('http')) return;
+
+    setIsFetchingUrl(true);
+    try {
+      const response = await fetch('/api/fetch-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+
+      const result = await response.json();
+      if (response.ok && result.content) {
+        setUrlContent(result.content);
+      }
+    } catch (error) {
+      console.error('Failed to fetch URL:', error);
+    }
+    setIsFetchingUrl(false);
+  };
+
+  // Watch for sourceUrl changes
+  useEffect(() => {
+    const sourceUrl = formData[activeSkill?.id]?.sourceUrl;
+    if (sourceUrl && sourceUrl.startsWith('http')) {
+      const debounce = setTimeout(() => fetchUrlContent(sourceUrl), 1000);
+      return () => clearTimeout(debounce);
+    } else {
+      setUrlContent('');
+    }
+  }, [formData, activeSkill?.id]);
 
   // File upload handlers
   const processFile = useCallback(async (file: File): Promise<UploadedFile | null> => {
@@ -126,11 +175,73 @@ export default function Home() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  // Stream response handler
+  const streamResponse = async (
+    systemPrompt: string,
+    userPrompt: string,
+    images: any[],
+    onChunk: (text: string) => void
+  ) => {
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemPrompt,
+        userPrompt,
+        images: images.length > 0 ? images : undefined,
+      }),
+    });
+
+    const contentType = response.headers.get('content-type');
+
+    if (contentType?.includes('text/event-stream')) {
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let content = '';
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.text) {
+                  content += parsed.text;
+                  onChunk(content);
+                }
+              } catch {
+                // Skip invalid JSON
+              }
+            }
+          }
+        }
+      }
+      return content;
+    } else {
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to generate content');
+      }
+      onChunk(result.content);
+      return result.content;
+    }
+  };
+
   const generate = async () => {
     if (!activeSkill) return;
 
     setIsLoading(true);
     setOutput(null);
+    setChatMessages([]);
 
     try {
       const data = formData[activeSkill.id] || {};
@@ -141,7 +252,6 @@ export default function Home() {
 
       for (const uploadedFile of uploadedFiles) {
         if (uploadedFile.type === 'image' && uploadedFile.base64) {
-          // Extract base64 data and media type
           const matches = uploadedFile.base64.match(/^data:(.+);base64,(.+)$/);
           if (matches) {
             imageContents.push({
@@ -160,76 +270,29 @@ export default function Home() {
         fileContext = `\n\n## ATTACHED FILES (${uploadedFiles.length} file${uploadedFiles.length > 1 ? 's' : ''}):\n${uploadedFiles.map(f => `- ${f.file.name} (${f.type.toUpperCase()})`).join('\n')}\n\nPlease analyze and incorporate the content from these attached files as context for your response.`;
       }
 
-      const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext;
-
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemPrompt: activeSkill.systemPrompt,
-          userPrompt,
-          images: imageContents.length > 0 ? imageContents : undefined,
-        }),
-      });
-
-      // Check if it's a streaming response
-      const contentType = response.headers.get('content-type');
-
-      if (contentType?.includes('text/event-stream')) {
-        // Handle streaming response
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let content = '';
-
-        setOutput({
-          content: '',
-          format: activeSkill.outputFormat,
-        });
-        setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
-
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') continue;
-
-                try {
-                  const parsed = JSON.parse(data);
-                  if (parsed.text) {
-                    content += parsed.text;
-                    setOutput({
-                      content,
-                      format: activeSkill.outputFormat,
-                    });
-                  }
-                } catch {
-                  // Skip invalid JSON
-                }
-              }
-            }
-          }
-        }
-      } else {
-        // Handle regular JSON response (for errors)
-        const result = await response.json();
-
-        if (!response.ok) {
-          throw new Error(result.error || 'Failed to generate content');
-        }
-
-        setOutput({
-          content: result.content,
-          format: activeSkill.outputFormat,
-        });
-        setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
+      // Add URL content if available
+      let urlContext = '';
+      if (urlContent) {
+        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}\n\n---\n\nUse the above website content as the primary source for generating the output.`;
       }
+
+      const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext + urlContext;
+
+      setOutput({ content: '', format: activeSkill.outputFormat });
+      setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
+
+      const finalContent = await streamResponse(
+        activeSkill.systemPrompt,
+        userPrompt,
+        imageContents,
+        (content) => setOutput({ content, format: activeSkill.outputFormat })
+      );
+
+      // Store initial generation in chat history
+      setChatMessages([
+        { role: 'assistant', content: finalContent }
+      ]);
+
     } catch (err: any) {
       setOutput({
         content: `Error: ${err.message}`,
@@ -238,6 +301,70 @@ export default function Home() {
     }
 
     setIsLoading(false);
+  };
+
+  // Chat for iterative tweaks
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || !output || isChatLoading) return;
+
+    const userMessage = chatInput.trim();
+    setChatInput('');
+    setIsChatLoading(true);
+
+    // Add user message to chat
+    const newMessages: ChatMessage[] = [
+      ...chatMessages,
+      { role: 'user', content: userMessage }
+    ];
+    setChatMessages(newMessages);
+
+    try {
+      // Build conversation context
+      const conversationContext = newMessages
+        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n\n');
+
+      const tweakPrompt = `Here is our conversation so far:
+
+${conversationContext}
+
+The user wants to modify the output. Their latest request is:
+"${userMessage}"
+
+Please provide an updated version of the content based on their feedback. Maintain the same format (${activeSkill?.outputFormat.toUpperCase()}).`;
+
+      let newContent = '';
+      await streamResponse(
+        activeSkill?.systemPrompt || '',
+        tweakPrompt,
+        [],
+        (content) => {
+          newContent = content;
+          setOutput({ content, format: activeSkill?.outputFormat || 'text' });
+        }
+      );
+
+      // Add assistant response to chat
+      setChatMessages([
+        ...newMessages,
+        { role: 'assistant', content: newContent }
+      ]);
+
+    } catch (err: any) {
+      setChatMessages([
+        ...newMessages,
+        { role: 'assistant', content: `Error: ${err.message}` }
+      ]);
+    }
+
+    setIsChatLoading(false);
+  };
+
+  const handleChatKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
   };
 
   const copyOutput = () => {
@@ -266,6 +393,9 @@ export default function Home() {
     setCustomExpanded(false);
     setCustomInstructions(formData[skill.id]?.customInstructions || '');
     setUploadedFiles([]);
+    setUrlContent('');
+    setChatMessages([]);
+    setChatInput('');
   };
 
   const renderMarkdown = (text: string) => {
@@ -402,6 +532,12 @@ export default function Home() {
                     <label className={styles.label}>
                       {field.label}
                       {field.required && <span className={styles.required}>*</span>}
+                      {field.name === 'sourceUrl' && isFetchingUrl && (
+                        <span className={styles.fetchingBadge}>Fetching...</span>
+                      )}
+                      {field.name === 'sourceUrl' && urlContent && !isFetchingUrl && (
+                        <span className={styles.successBadge}>✓ Loaded</span>
+                      )}
                     </label>
 
                     {field.type === 'select' ? (
@@ -567,23 +703,79 @@ export default function Home() {
 
             <div className={styles.outputContent}>
               {output ? (
-                output.format === 'html' && currentView === 'preview' ? (
-                  <div className={styles.previewFrame}>
-                    <iframe
-                      srcDoc={output.content}
-                      title="Preview"
-                    />
+                <>
+                  <div className={styles.outputPreview}>
+                    {output.format === 'html' && currentView === 'preview' ? (
+                      <div className={styles.previewFrame}>
+                        <iframe
+                          srcDoc={output.content}
+                          title="Preview"
+                        />
+                      </div>
+                    ) : output.format === 'markdown' ? (
+                      <div
+                        className={styles.markdownView}
+                        dangerouslySetInnerHTML={{
+                          __html: renderMarkdown(output.content),
+                        }}
+                      />
+                    ) : (
+                      <pre className={styles.codeView}>{output.content}</pre>
+                    )}
                   </div>
-                ) : output.format === 'markdown' ? (
-                  <div
-                    className={styles.markdownView}
-                    dangerouslySetInnerHTML={{
-                      __html: renderMarkdown(output.content),
-                    }}
-                  />
-                ) : (
-                  <pre className={styles.codeView}>{output.content}</pre>
-                )
+
+                  {/* Chat Interface for Tweaks */}
+                  {output.content && !isLoading && (
+                    <div className={styles.chatSection}>
+                      <div className={styles.chatHeader}>
+                        <span>💬 Refine Output</span>
+                        <span className={styles.chatHint}>Ask for changes or adjustments</span>
+                      </div>
+
+                      {chatMessages.length > 1 && (
+                        <div className={styles.chatHistory}>
+                          {chatMessages.slice(1).map((msg, idx) => (
+                            <div
+                              key={idx}
+                              className={`${styles.chatMessage} ${styles[msg.role]}`}
+                            >
+                              <div className={styles.chatRole}>
+                                {msg.role === 'user' ? 'You' : 'AI'}
+                              </div>
+                              <div className={styles.chatContent}>
+                                {msg.role === 'user' ? msg.content : 'Updated the output above ↑'}
+                              </div>
+                            </div>
+                          ))}
+                          <div ref={chatEndRef} />
+                        </div>
+                      )}
+
+                      <div className={styles.chatInput}>
+                        <input
+                          type="text"
+                          placeholder="e.g., Make it shorter, add more stats, change the tone..."
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={handleChatKeyDown}
+                          disabled={isChatLoading}
+                          className={styles.input}
+                        />
+                        <button
+                          className={styles.chatSendBtn}
+                          onClick={sendChatMessage}
+                          disabled={isChatLoading || !chatInput.trim()}
+                        >
+                          {isChatLoading ? (
+                            <div className={styles.spinnerSmall} />
+                          ) : (
+                            '→'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className={styles.outputEmpty}>
                   <div className={styles.outputEmptyIcon}>✨</div>
