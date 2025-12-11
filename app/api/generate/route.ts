@@ -6,25 +6,8 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Type for image content
-interface ImageContent {
-  type: 'image';
-  source: {
-    type: 'base64';
-    media_type: string;
-    data: string;
-  };
-}
-
-// Type for PDF content
-interface PDFContent {
-  type: 'document';
-  source: {
-    type: 'base64';
-    media_type: 'application/pdf';
-    data: string;
-  };
-}
+// Valid media types for images
+type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
 export async function POST(request: NextRequest) {
   try {
@@ -44,31 +27,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build the message content array
-    const messageContent: Array<
-      | { type: 'text'; text: string }
-      | ImageContent
-      | PDFContent
-    > = [];
+    // Build the message content array with proper Anthropic types
+    const messageContent: Anthropic.MessageCreateParams['messages'][0]['content'] = [];
 
     // Add images if provided
     if (images && Array.isArray(images)) {
       for (const image of images) {
-        messageContent.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: image.source.media_type,
-            data: image.source.data,
-          },
-        });
+        // Validate and cast media type
+        const mediaType = image.source.media_type as string;
+        const validMediaTypes: ImageMediaType[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+        if (validMediaTypes.includes(mediaType as ImageMediaType)) {
+          (messageContent as Anthropic.ImageBlockParam[]).push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: mediaType as ImageMediaType,
+              data: image.source.data,
+            },
+          });
+        }
       }
     }
 
-    // Add PDFs if provided (Claude supports PDF documents)
+    // Add PDFs if provided (Claude supports PDF documents via base64)
     if (pdfs && Array.isArray(pdfs)) {
       for (const pdf of pdfs) {
-        messageContent.push({
+        (messageContent as Anthropic.DocumentBlockParam[]).push({
           type: 'document',
           source: {
             type: 'base64',
@@ -80,7 +65,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Add the text prompt
-    messageContent.push({
+    (messageContent as Anthropic.TextBlockParam[]).push({
       type: 'text',
       text: userPrompt,
     });
