@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 
 // Initialize Anthropic client
@@ -14,16 +14,16 @@ export async function POST(request: NextRequest) {
     const { systemPrompt, userPrompt, images } = await request.json();
 
     if (!systemPrompt || !userPrompt) {
-      return NextResponse.json(
-        { error: 'Missing required fields: systemPrompt and userPrompt' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ error: 'Missing required fields: systemPrompt and userPrompt' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json(
-        { error: 'ANTHROPIC_API_KEY is not configured' },
-        { status: 500 }
+      return new Response(
+        JSON.stringify({ error: 'ANTHROPIC_API_KEY is not configured' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -36,7 +36,6 @@ export async function POST(request: NextRequest) {
     // Add images if provided
     if (images && Array.isArray(images)) {
       for (const image of images) {
-        // Validate and cast media type
         const mediaType = image.source.media_type as string;
         const validMediaTypes: ImageMediaType[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
@@ -59,7 +58,8 @@ export async function POST(request: NextRequest) {
       text: userPrompt,
     });
 
-    const message = await anthropic.messages.create({
+    // Use streaming for faster response
+    const stream = await anthropic.messages.stream({
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
       max_tokens: 8192,
       system: systemPrompt,
@@ -71,47 +71,56 @@ export async function POST(request: NextRequest) {
       ],
     });
 
-    // Extract text content from the response
-    const textContent = message.content.find((block) => block.type === 'text');
-    const content = textContent && 'text' in textContent ? textContent.text : '';
+    // Create a readable stream for the response
+    const encoder = new TextEncoder();
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const event of stream) {
+            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+              const text = event.delta.text;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
+            }
+          }
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    });
 
-    return NextResponse.json({
-      content,
-      usage: message.usage,
+    return new Response(readableStream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
     });
   } catch (error: any) {
     console.error('API Error:', error);
 
-    // Handle specific Anthropic API errors
     if (error.status === 401) {
-      return NextResponse.json(
-        { error: 'Invalid API key' },
-        { status: 401 }
+      return new Response(
+        JSON.stringify({ error: 'Invalid API key' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (error.status === 429) {
-      return NextResponse.json(
-        { error: 'Rate limit exceeded. Please try again later.' },
-        { status: 429 }
+      return new Response(
+        JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    if (error.status === 413) {
-      return NextResponse.json(
-        { error: 'Request too large. Please reduce file sizes or remove some files.' },
-        { status: 413 }
-      );
-    }
-
-    return NextResponse.json(
-      { error: error.message || 'An error occurred while generating content' },
-      { status: 500 }
+    return new Response(
+      JSON.stringify({ error: error.message || 'An error occurred while generating content' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }
 
-// Handle OPTIONS for CORS
 export async function OPTIONS() {
-  return NextResponse.json({}, { status: 200 });
+  return new Response(null, { status: 200 });
 }
