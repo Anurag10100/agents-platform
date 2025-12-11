@@ -1,17 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { skills, Skill } from './skills-data';
 import styles from './page.module.css';
 
+interface UploadedFile {
+  id: string;
+  file: File;
+  preview?: string;
+  base64?: string;
+  type: 'image' | 'pdf';
+}
+
 export default function Home() {
-  const [activeSkill, setActiveSkill] = useState<Skill | null>(null);
+  const [activeSkill, setActiveSkill] = useState<Skill>(skills[0]);
   const [formData, setFormData] = useState<Record<string, Record<string, any>>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [output, setOutput] = useState<{ content: string; format: string } | null>(null);
   const [currentView, setCurrentView] = useState<'preview' | 'code'>('preview');
   const [customExpanded, setCustomExpanded] = useState(false);
   const [customInstructions, setCustomInstructions] = useState('');
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const updateField = (skillId: string, fieldName: string, value: any) => {
     setFormData((prev) => ({
@@ -36,6 +48,84 @@ export default function Home() {
     setCustomInstructions(current ? `${current}\n• ${text}` : `• ${text}`);
   };
 
+  const toggleTheme = () => {
+    const newTheme = theme === 'light' ? 'dark' : 'light';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+  };
+
+  // File upload handlers
+  const processFile = useCallback(async (file: File): Promise<UploadedFile | null> => {
+    const isImage = file.type.startsWith('image/');
+    const isPdf = file.type === 'application/pdf';
+
+    if (!isImage && !isPdf) {
+      alert('Please upload images (PNG, JPG, WebP) or PDF files only.');
+      return null;
+    }
+
+    if (file.size > 20 * 1024 * 1024) {
+      alert('File size must be less than 20MB.');
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = e.target?.result as string;
+        const uploadedFile: UploadedFile = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          file,
+          base64,
+          type: isImage ? 'image' : 'pdf',
+          preview: isImage ? base64 : undefined,
+        };
+        resolve(uploadedFile);
+      };
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const handleFileSelect = useCallback(async (files: FileList | null) => {
+    if (!files) return;
+
+    const newFiles: UploadedFile[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const processed = await processFile(files[i]);
+      if (processed) {
+        newFiles.push(processed);
+      }
+    }
+
+    setUploadedFiles((prev) => [...prev, ...newFiles]);
+  }, [processFile]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    handleFileSelect(e.dataTransfer.files);
+  }, [handleFileSelect]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  }, []);
+
+  const removeFile = useCallback((id: string) => {
+    setUploadedFiles((prev) => prev.filter((f) => f.id !== id));
+  }, []);
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   const generate = async () => {
     if (!activeSkill) return;
 
@@ -44,12 +134,52 @@ export default function Home() {
 
     try {
       const data = formData[activeSkill.id] || {};
+
+      // Build file context for the prompt
+      let fileContext = '';
+      const imageContents: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
+      const pdfContents: Array<{ data: string; name: string }> = [];
+
+      for (const uploadedFile of uploadedFiles) {
+        if (uploadedFile.type === 'image' && uploadedFile.base64) {
+          // Extract base64 data and media type
+          const matches = uploadedFile.base64.match(/^data:(.+);base64,(.+)$/);
+          if (matches) {
+            imageContents.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: matches[1],
+                data: matches[2],
+              },
+            });
+          }
+        } else if (uploadedFile.type === 'pdf' && uploadedFile.base64) {
+          // Extract base64 data for PDF
+          const matches = uploadedFile.base64.match(/^data:(.+);base64,(.+)$/);
+          if (matches) {
+            pdfContents.push({
+              data: matches[2],
+              name: uploadedFile.file.name,
+            });
+          }
+        }
+      }
+
+      if (uploadedFiles.length > 0) {
+        fileContext = `\n\n## ATTACHED FILES (${uploadedFiles.length} file${uploadedFiles.length > 1 ? 's' : ''}):\n${uploadedFiles.map(f => `- ${f.file.name} (${f.type.toUpperCase()})`).join('\n')}\n\nPlease analyze and incorporate the content from these attached files as context for your response.`;
+      }
+
+      const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext;
+
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemPrompt: activeSkill.systemPrompt,
-          userPrompt: activeSkill.buildPrompt(data, customInstructions.trim()),
+          userPrompt,
+          images: imageContents.length > 0 ? imageContents : undefined,
+          pdfs: pdfContents.length > 0 ? pdfContents : undefined,
         }),
       });
 
@@ -94,19 +224,12 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const openSkill = (skill: Skill) => {
+  const selectSkill = (skill: Skill) => {
     setActiveSkill(skill);
     setOutput(null);
     setCustomExpanded(false);
     setCustomInstructions(formData[skill.id]?.customInstructions || '');
-    document.documentElement.style.setProperty('--accent', skill.color);
-    document.documentElement.style.setProperty('--accent-bg', `${skill.color}20`);
-    document.documentElement.style.setProperty('--accent-glow', `${skill.color}30`);
-  };
-
-  const closeModal = () => {
-    setActiveSkill(null);
-    setOutput(null);
+    setUploadedFiles([]);
   };
 
   const renderMarkdown = (text: string) => {
@@ -121,105 +244,124 @@ export default function Home() {
       .replace(/\n\n/g, '</p><p>');
   };
 
-  const escapeHtml = (text: string) => {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  };
-
   return (
-    <div className={styles.container}>
-      {/* Header */}
-      <header className={styles.header}>
-        <div className={styles.headerInner}>
-          <div>
-            <div className={styles.logo}>ELETS SKILLS HUB</div>
-            <div className={styles.logoSub}>AI CONTENT GENERATOR</div>
+    <div className={styles.layout}>
+      {/* Sidebar */}
+      <aside className={styles.sidebar}>
+        <div className={styles.sidebarHeader}>
+          <div className={styles.logo}>
+            <div className={styles.logoIcon}>S</div>
+            <span className={styles.logoText}>Skills Hub</span>
           </div>
-          <div className={styles.badge}>● {skills.length} Skills Active</div>
         </div>
-      </header>
 
-      {/* Main */}
+        <nav className={styles.sidebarNav}>
+          <div className={styles.navSection}>
+            <div className={styles.navSectionTitle}>Content Generation</div>
+            {skills.map((skill) => (
+              <button
+                key={skill.id}
+                className={`${styles.navItem} ${activeSkill?.id === skill.id ? styles.active : ''}`}
+                onClick={() => selectSkill(skill)}
+              >
+                <span className={styles.navIcon}>{skill.icon}</span>
+                <span className={styles.navLabel}>{skill.name}</span>
+                <span className={styles.navBadge}>{skill.outputFormat.toUpperCase()}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+
+        <div className={styles.sidebarFooter}>
+          <button className={styles.themeToggle} onClick={toggleTheme}>
+            {theme === 'light' ? '🌙' : '☀️'} {theme === 'light' ? 'Dark' : 'Light'} Mode
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
       <main className={styles.main}>
-        <div className={styles.hero}>
-          <h1>Generate Content Instantly</h1>
-          <p>
-            Select a skill, configure parameters, add custom instructions, and get
-            publication-ready outputs in seconds.
-          </p>
-        </div>
+        {/* Header */}
+        <header className={styles.header}>
+          <div className={styles.headerTitle}>
+            <span className={styles.headerBreadcrumb}>Skills /</span>
+            <span>{activeSkill?.name}</span>
+          </div>
+          <div className={styles.headerSpacer} />
+        </header>
 
-        <div className={styles.grid}>
-          {skills.map((skill) => (
-            <div
-              key={skill.id}
-              className={styles.card}
-              onClick={() => openSkill(skill)}
-              style={{ '--card-accent': skill.color } as React.CSSProperties}
-            >
-              <div
-                className={styles.glow}
-                style={{ background: skill.gradient }}
-              />
-              <div className={styles.cardContent}>
-                <div className={styles.cardHeader}>
+        {/* Content */}
+        <div className={styles.content}>
+          {/* Form Panel */}
+          <div className={styles.formPanel}>
+            <div className={styles.formHeader}>
+              <h2 className={styles.formTitle}>{activeSkill?.name}</h2>
+              <p className={styles.formSubtitle}>{activeSkill?.description}</p>
+            </div>
+
+            <div className={styles.formBody}>
+              {/* File Upload Section */}
+              <div className={styles.formSection}>
+                <div className={styles.formSectionTitle}>Context Files</div>
+                <div className={styles.fileUpload}>
                   <div
-                    className={styles.cardIcon}
-                    style={{
-                      background: skill.gradient,
-                      boxShadow: `0 6px 20px ${skill.color}40`,
-                    }}
+                    className={`${styles.dropZone} ${isDragOver ? styles.dragOver : ''}`}
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onClick={() => fileInputRef.current?.click()}
                   >
-                    {skill.icon}
-                  </div>
-                  <div>
-                    <div className={styles.cardTitle}>{skill.name}</div>
-                    <div
-                      className={styles.cardFormat}
-                      style={{ color: skill.color }}
-                    >
-                      Output: {skill.outputFormat.toUpperCase()}
+                    <div className={styles.dropZoneIcon}>📎</div>
+                    <div className={styles.dropZoneText}>
+                      Drop files here or click to upload
+                    </div>
+                    <div className={styles.dropZoneHint}>
+                      Images (PNG, JPG, WebP) or PDF files up to 20MB
                     </div>
                   </div>
-                </div>
-                <div className={styles.cardDesc}>{skill.description}</div>
-                <div className={styles.cardCta} style={{ color: skill.color }}>
-                  Generate Now →
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,.pdf"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={(e) => handleFileSelect(e.target.files)}
+                  />
+
+                  {uploadedFiles.length > 0 && (
+                    <div className={styles.fileList}>
+                      {uploadedFiles.map((uploadedFile) => (
+                        <div key={uploadedFile.id} className={styles.fileItem}>
+                          <div className={styles.filePreview}>
+                            {uploadedFile.preview ? (
+                              <img src={uploadedFile.preview} alt={uploadedFile.file.name} />
+                            ) : (
+                              <span className={styles.filePreviewIcon}>📄</span>
+                            )}
+                          </div>
+                          <div className={styles.fileInfo}>
+                            <div className={styles.fileName}>{uploadedFile.file.name}</div>
+                            <div className={styles.fileSize}>
+                              {formatFileSize(uploadedFile.file.size)}
+                            </div>
+                          </div>
+                          <button
+                            className={styles.fileRemove}
+                            onClick={() => removeFile(uploadedFile.id)}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      </main>
 
-      {/* Modal */}
-      {activeSkill && (
-        <div className={styles.modal} onClick={(e) => e.target === e.currentTarget && closeModal()}>
-          <div className={`${styles.modalBox} ${output ? styles.expanded : styles.compact}`}>
-            {/* Form Panel */}
-            <div className={styles.formPanel}>
-              <div
-                className={styles.modalHeader}
-                style={{ background: activeSkill.gradient }}
-              >
-                <div className={styles.modalIcon}>{activeSkill.icon}</div>
-                <div style={{ flex: 1 }}>
-                  <div className={styles.modalTitle}>{activeSkill.name}</div>
-                  <div className={styles.modalSubtitle}>
-                    Generates {activeSkill.outputFormat.toUpperCase()}
-                  </div>
-                </div>
-                <button className={styles.closeBtn} onClick={closeModal}>
-                  ×
-                </button>
-              </div>
-
-              <div className={styles.formBody}>
-                {/* Form Fields */}
-                {activeSkill.fields.map((field) => (
+              {/* Form Fields */}
+              <div className={styles.formSection}>
+                <div className={styles.formSectionTitle}>Parameters</div>
+                {activeSkill?.fields.map((field) => (
                   <div key={field.name} className={styles.field}>
                     <label className={styles.label}>
                       {field.label}
@@ -228,6 +370,7 @@ export default function Home() {
 
                     {field.type === 'select' ? (
                       <select
+                        className={styles.select}
                         value={formData[activeSkill.id]?.[field.name] || ''}
                         onChange={(e) =>
                           updateField(activeSkill.id, field.name, e.target.value)
@@ -242,6 +385,7 @@ export default function Home() {
                       </select>
                     ) : field.type === 'textarea' ? (
                       <textarea
+                        className={styles.textarea}
                         placeholder={field.placeholder}
                         value={formData[activeSkill.id]?.[field.name] || ''}
                         onChange={(e) =>
@@ -258,7 +402,7 @@ export default function Home() {
                             <button
                               key={opt}
                               type="button"
-                              className={`${styles.multiBtn} ${selected ? styles.selected : ''}`}
+                              className={`${styles.multiOption} ${selected ? styles.selected : ''}`}
                               onClick={() =>
                                 toggleMulti(activeSkill.id, field.name, opt)
                               }
@@ -272,6 +416,7 @@ export default function Home() {
                     ) : (
                       <input
                         type={field.type}
+                        className={styles.input}
                         placeholder={field.placeholder}
                         value={formData[activeSkill.id]?.[field.name] || ''}
                         onChange={(e) =>
@@ -281,161 +426,143 @@ export default function Home() {
                     )}
                   </div>
                 ))}
+              </div>
 
-                {/* Custom Instructions Section */}
-                <div className={styles.customSection}>
-                  <div className={styles.customHeader}>
-                    <div
-                      className={styles.customToggle}
-                      onClick={() => setCustomExpanded(!customExpanded)}
-                    >
-                      <div className={styles.customToggleIcon}>✨</div>
-                      <div>
-                        <div className={styles.customToggleText}>
-                          Custom Instructions
-                        </div>
-                        <div className={styles.customToggleHint}>
-                          Add specific requirements or context
-                        </div>
+              {/* Custom Instructions */}
+              <div className={styles.customSection}>
+                <div
+                  className={styles.customToggle}
+                  onClick={() => setCustomExpanded(!customExpanded)}
+                >
+                  <div className={styles.customToggleLeft}>
+                    <div className={styles.customToggleIcon}>✨</div>
+                    <div>
+                      <div className={styles.customToggleText}>Custom Instructions</div>
+                      <div className={styles.customToggleHint}>
+                        Add specific requirements
                       </div>
                     </div>
-                    <button
-                      className={styles.expandBtn}
-                      onClick={() => setCustomExpanded(!customExpanded)}
-                    >
-                      {customExpanded ? '− Hide' : '+ Add'}
-                    </button>
                   </div>
-
-                  {customExpanded && (
-                    <div className={styles.customContent}>
-                      <textarea
-                        className={styles.customTextarea}
-                        placeholder={`Add any specific instructions, requirements, or context...
-
-Examples:
-• Include specific data points or statistics
-• Mention certain people or organizations
-• Use a particular writing style or tone
-• Focus on specific aspects of the topic`}
-                        value={customInstructions}
-                        onChange={(e) => setCustomInstructions(e.target.value)}
-                      />
-                      <div className={styles.charCounter}>
-                        {customInstructions.length} / 1000 characters
-                      </div>
-
-                      <div className={styles.customSuggestions}>
-                        {activeSkill.customSuggestions.map((s) => (
-                          <span
-                            key={s}
-                            className={styles.suggestionChip}
-                            onClick={() => addSuggestion(s)}
-                          >
-                            {s}
-                          </span>
-                        ))}
-                      </div>
-
-                      <div className={styles.customExamples}>
-                        <div className={styles.customExamplesTitle}>
-                          💡 Suggestions for this skill
-                        </div>
-                        <div className={styles.customExamplesList}>
-                          {activeSkill.customExamples}
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  <button className={styles.customToggleBtn}>
+                    {customExpanded ? 'Hide' : 'Add'}
+                  </button>
                 </div>
 
-                <button
-                  className={styles.generateBtn}
-                  onClick={generate}
-                  disabled={isLoading}
-                  style={{ background: activeSkill.gradient }}
-                >
-                  {isLoading ? (
-                    <>
-                      <div className="spinner" />
-                      Generating...
-                    </>
-                  ) : (
-                    'Generate Content ✨'
-                  )}
-                </button>
+                {customExpanded && (
+                  <div className={styles.customContent}>
+                    <textarea
+                      className={styles.textarea}
+                      placeholder="Add any specific instructions, requirements, or context..."
+                      value={customInstructions}
+                      onChange={(e) => setCustomInstructions(e.target.value)}
+                      style={{ minHeight: '100px' }}
+                    />
+                    <div className={styles.suggestions}>
+                      {activeSkill?.customSuggestions.map((s) => (
+                        <button
+                          key={s}
+                          className={styles.suggestionChip}
+                          onClick={() => addSuggestion(s)}
+                        >
+                          + {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Output Panel */}
-            {output && (
-              <div className={styles.outputPanel}>
-                <div className={styles.outputHeader}>
-                  <span className={styles.outputLabel}>Generated Output</span>
+            {/* Form Actions */}
+            <div className={styles.formActions}>
+              <button
+                className={styles.generateBtn}
+                onClick={generate}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <>
+                    <div className={styles.spinner} />
+                    Generating...
+                  </>
+                ) : (
+                  'Generate Content'
+                )}
+              </button>
+            </div>
+          </div>
 
-                  {output.format === 'html' && (
-                    <div className={styles.viewToggle}>
-                      <button
-                        className={`${styles.viewBtn} ${currentView === 'preview' ? styles.active : ''}`}
-                        onClick={() => setCurrentView('preview')}
-                      >
-                        Preview
-                      </button>
-                      <button
-                        className={`${styles.viewBtn} ${currentView === 'code' ? styles.active : ''}`}
-                        onClick={() => setCurrentView('code')}
-                      >
-                        Code
-                      </button>
-                    </div>
-                  )}
+          {/* Output Panel */}
+          <div className={styles.outputPanel}>
+            <div className={styles.outputHeader}>
+              <span className={styles.outputTitle}>Output</span>
 
+              {output && output.format === 'html' && (
+                <div className={styles.viewToggle}>
                   <button
-                    className={`${styles.actionBtn} ${styles.secondary}`}
-                    onClick={copyOutput}
+                    className={`${styles.viewBtn} ${currentView === 'preview' ? styles.active : ''}`}
+                    onClick={() => setCurrentView('preview')}
                   >
-                    📋 Copy
+                    Preview
+                  </button>
+                  <button
+                    className={`${styles.viewBtn} ${currentView === 'code' ? styles.active : ''}`}
+                    onClick={() => setCurrentView('code')}
+                  >
+                    Code
+                  </button>
+                </div>
+              )}
+
+              {output && (
+                <div className={styles.outputActions}>
+                  <button className={styles.actionBtn} onClick={copyOutput}>
+                    Copy
                   </button>
                   <button
                     className={`${styles.actionBtn} ${styles.primary}`}
                     onClick={downloadOutput}
                   >
-                    ⬇️ Download
+                    Download
                   </button>
                 </div>
+              )}
+            </div>
 
-                <div className={styles.outputContent}>
-                  {output.format === 'html' && currentView === 'preview' ? (
-                    <div className={styles.previewFrame}>
-                      <iframe
-                        srcDoc={output.content}
-                        title="Preview"
-                        style={{ width: '100%', minHeight: '600px', border: 'none' }}
-                      />
-                    </div>
-                  ) : output.format === 'markdown' ? (
-                    <div
-                      className={styles.markdownView}
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(output.content),
-                      }}
+            <div className={styles.outputContent}>
+              {output ? (
+                output.format === 'html' && currentView === 'preview' ? (
+                  <div className={styles.previewFrame}>
+                    <iframe
+                      srcDoc={output.content}
+                      title="Preview"
                     />
-                  ) : (
-                    <pre className={styles.codeView}>{output.content}</pre>
-                  )}
+                  </div>
+                ) : output.format === 'markdown' ? (
+                  <div
+                    className={styles.markdownView}
+                    dangerouslySetInnerHTML={{
+                      __html: renderMarkdown(output.content),
+                    }}
+                  />
+                ) : (
+                  <pre className={styles.codeView}>{output.content}</pre>
+                )
+              ) : (
+                <div className={styles.outputEmpty}>
+                  <div className={styles.outputEmptyIcon}>✨</div>
+                  <div className={styles.outputEmptyText}>
+                    Ready to generate content
+                  </div>
+                  <div className={styles.outputEmptyHint}>
+                    Fill in the parameters and click &quot;Generate Content&quot;
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      )}
-
-      {/* Footer */}
-      <footer className={styles.footer}>
-        Elets Technomedia Skills Hub • Powered by Claude AI
-        <br />
-        Content generation for eGov, eHealth, BFSI & Education
-      </footer>
+      </main>
     </div>
   );
 }

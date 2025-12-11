@@ -2,13 +2,13 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Elets Skills Hub | AI Content Generator',
-  description: 'AI-powered content generation hub for Elets Technomedia - Create newsletters, research briefs, speaker mailers, and more.',
-  keywords: ['AI', 'content generation', 'newsletter', 'research', 'Elets', 'eGovernance', 'eHealth', 'BFSI'],
+  title: 'Skills Hub | AI Content Studio',
+  description: 'Professional AI-powered content generation platform. Create newsletters, research briefs, presentations, and more.',
+  keywords: ['AI', 'content generation', 'newsletter', 'research', 'automation'],
   authors: [{ name: 'Elets Technomedia' }],
   openGraph: {
-    title: 'Elets Skills Hub | AI Content Generator',
-    description: 'AI-powered content generation hub for Elets Technomedia',
+    title: 'Skills Hub | AI Content Studio',
+    description: 'Professional AI-powered content generation platform',
     type: 'website',
   },
 };
@@ -24,7 +24,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
           rel="stylesheet"
         />
       </head>
