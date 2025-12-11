@@ -171,9 +171,9 @@ function extractArticles(html: string): Array<{ title: string; content: string }
 
   // Extract sections with headings
   const sectionPattern = /<(?:section|div)[^>]*>([\s\S]*?)<\/(?:section|div)>/gi;
-  const matches = html.matchAll(sectionPattern);
+  let match;
 
-  for (const match of matches) {
+  while ((match = sectionPattern.exec(html)) !== null) {
     const section = match[1];
     const headingMatch = section.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i);
 
@@ -185,10 +185,12 @@ function extractArticles(html: string): Array<{ title: string; content: string }
         articles.push({ title, content });
       }
     }
+
+    // Limit to 10 articles
+    if (articles.length >= 10) break;
   }
 
-  // Limit to first 10 articles
-  return articles.slice(0, 10);
+  return articles;
 }
 
 function cleanHtmlToText(html: string): string {
