@@ -847,6 +847,90 @@
   margin-bottom: var(--space-6);
 }
 
+/* Streaming Progress Indicator */
+.streamingIndicator {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: linear-gradient(135deg, var(--accent-bg), var(--bg-secondary));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  backdrop-filter: blur(8px);
+}
+
+.streamingPulse {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: streamPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes streamPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.7;
+  }
+}
+
+.streamingInfo {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.streamingLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.streamingStats {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.streamingProgress {
+  width: 80px;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.streamingProgressBar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: streamProgress 2s ease-in-out infinite;
+}
+
+@keyframes streamProgress {
+  0% {
+    width: 0%;
+    margin-left: 0;
+  }
+  50% {
+    width: 60%;
+    margin-left: 20%;
+  }
+  100% {
+    width: 0%;
+    margin-left: 100%;
+  }
+}
+
 /* Chat Section */
 .chatSection {
   margin-top: var(--space-6);
@@ -854,6 +938,25 @@
   border-radius: var(--radius-lg);
   background: var(--bg-primary);
   overflow: hidden;
+  transition: all var(--transition-normal);
+}
+
+.chatSection.chatExpanded {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  left: calc(260px + 420px + var(--space-6) * 2);
+  top: auto;
+  max-height: 60vh;
+  z-index: 100;
+  box-shadow: var(--shadow-xl);
+}
+
+@media (max-width: 900px) {
+  .chatSection.chatExpanded {
+    left: var(--space-4);
+    right: var(--space-4);
+  }
 }
 
 .chatHeader {
@@ -866,6 +969,33 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
+}
+
+.chatHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.chatExpandBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chatExpandBtn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 
 .chatHint {
@@ -882,6 +1012,78 @@
   flex-direction: column;
   gap: var(--space-3);
   border-bottom: 1px solid var(--border-light);
+  position: relative;
+  scroll-behavior: smooth;
+}
+
+.chatExpanded .chatHistory {
+  max-height: calc(60vh - 140px);
+}
+
+/* Scroll to bottom button */
+.scrollToBottomBtn {
+  position: sticky;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: var(--space-2) var(--space-4);
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-fast);
+  animation: fadeIn var(--transition-normal);
+}
+
+.scrollToBottomBtn:hover {
+  background: var(--accent-dark);
+  transform: translateX(-50%) translateY(-2px);
+}
+
+/* Typing indicator */
+.chatTypingIndicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-light);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.typingDots {
+  display: flex;
+  gap: 4px;
+}
+
+.typingDots span {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: typingBounce 1.4s ease-in-out infinite;
+}
+
+.typingDots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typingDots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4px);
+  }
 }
 
 .chatMessage {

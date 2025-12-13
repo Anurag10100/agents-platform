@@ -15,6 +15,14 @@ interface UploadedFile {
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  summary?: string; // Short summary for assistant messages
+}
+
+interface StreamingState {
+  isStreaming: boolean;
+  charCount: number;
+  startTime: number | null;
+  charsPerSecond: number;
 }
 
 export default function Home() {
@@ -33,13 +41,59 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [streamingState, setStreamingState] = useState<StreamingState>({
+    isStreaming: false,
+    charCount: 0,
+    startTime: null,
+    charsPerSecond: 0,
+  });
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatHistoryRef = useRef<HTMLDivElement>(null);
+  const outputContentRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll chat
   useEffect(() => {
+    if (!showScrollToBottom) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, showScrollToBottom]);
+
+  // Auto-scroll output during streaming
+  useEffect(() => {
+    if (streamingState.isStreaming && outputContentRef.current) {
+      outputContentRef.current.scrollTop = outputContentRef.current.scrollHeight;
+    }
+  }, [output?.content, streamingState.isStreaming]);
+
+  // Handle chat scroll to detect if user scrolled up
+  const handleChatScroll = () => {
+    if (chatHistoryRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatHistoryRef.current;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
+      setShowScrollToBottom(!isNearBottom);
+    }
+  };
+
+  const scrollChatToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+    setShowScrollToBottom(false);
+  };
+
+  // Generate summary from content changes
+  const generateChangeSummary = (oldContent: string, newContent: string): string => {
+    const oldLength = oldContent.length;
+    const newLength = newContent.length;
+    const diff = newLength - oldLength;
+
+    if (diff > 500) return `Added ~${Math.round(diff / 100) * 100} characters of content`;
+    if (diff < -500) return `Removed ~${Math.round(Math.abs(diff) / 100) * 100} characters`;
+    if (diff > 0) return 'Expanded and refined the content';
+    if (diff < 0) return 'Condensed and tightened the content';
+    return 'Refined and adjusted the content';
+  };
 
   const updateField = (skillId: string, fieldName: string, value: any) => {
     setFormData((prev) => ({
@@ -175,13 +229,21 @@ export default function Home() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  // Stream response handler
+  // Stream response handler with progress tracking
   const streamResponse = async (
     systemPrompt: string,
     userPrompt: string,
     images: any[],
     onChunk: (text: string) => void
   ) => {
+    const startTime = Date.now();
+    setStreamingState({
+      isStreaming: true,
+      charCount: 0,
+      startTime,
+      charsPerSecond: 0,
+    });
+
     const response = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -217,6 +279,15 @@ export default function Home() {
                 if (parsed.text) {
                   content += parsed.text;
                   onChunk(content);
+
+                  // Update streaming progress
+                  const elapsed = (Date.now() - startTime) / 1000;
+                  setStreamingState({
+                    isStreaming: true,
+                    charCount: content.length,
+                    startTime,
+                    charsPerSecond: elapsed > 0 ? Math.round(content.length / elapsed) : 0,
+                  });
                 }
               } catch {
                 // Skip invalid JSON
@@ -225,9 +296,13 @@ export default function Home() {
           }
         }
       }
+
+      // Streaming complete
+      setStreamingState(prev => ({ ...prev, isStreaming: false }));
       return content;
     } else {
       const result = await response.json();
+      setStreamingState(prev => ({ ...prev, isStreaming: false }));
       if (!response.ok) {
         throw new Error(result.error || 'Failed to generate content');
       }
@@ -308,6 +383,7 @@ export default function Home() {
     if (!chatInput.trim() || !output || isChatLoading) return;
 
     const userMessage = chatInput.trim();
+    const previousContent = output.content;
     setChatInput('');
     setIsChatLoading(true);
 
@@ -344,16 +420,19 @@ Please provide an updated version of the content based on their feedback. Mainta
         }
       );
 
-      // Add assistant response to chat
+      // Generate a helpful summary of changes
+      const summary = generateChangeSummary(previousContent, newContent);
+
+      // Add assistant response to chat with summary
       setChatMessages([
         ...newMessages,
-        { role: 'assistant', content: newContent }
+        { role: 'assistant', content: newContent, summary }
       ]);
 
     } catch (err: any) {
       setChatMessages([
         ...newMessages,
-        { role: 'assistant', content: `Error: ${err.message}` }
+        { role: 'assistant', content: `Error: ${err.message}`, summary: 'Error occurred' }
       ]);
     }
 
@@ -701,7 +780,26 @@ Please provide an updated version of the content based on their feedback. Mainta
               )}
             </div>
 
-            <div className={styles.outputContent}>
+            <div className={styles.outputContent} ref={outputContentRef}>
+              {/* Streaming Progress Indicator */}
+              {streamingState.isStreaming && (
+                <div className={styles.streamingIndicator}>
+                  <div className={styles.streamingPulse} />
+                  <div className={styles.streamingInfo}>
+                    <span className={styles.streamingLabel}>Generating...</span>
+                    <span className={styles.streamingStats}>
+                      {streamingState.charCount.toLocaleString()} chars
+                      {streamingState.charsPerSecond > 0 && (
+                        <> · {streamingState.charsPerSecond} chars/sec</>
+                      )}
+                    </span>
+                  </div>
+                  <div className={styles.streamingProgress}>
+                    <div className={styles.streamingProgressBar} />
+                  </div>
+                </div>
+              )}
+
               {output ? (
                 <>
                   <div className={styles.outputPreview}>
@@ -726,14 +824,29 @@ Please provide an updated version of the content based on their feedback. Mainta
 
                   {/* Chat Interface for Tweaks */}
                   {output.content && !isLoading && (
-                    <div className={styles.chatSection}>
+                    <div className={`${styles.chatSection} ${chatExpanded ? styles.chatExpanded : ''}`}>
                       <div className={styles.chatHeader}>
-                        <span>💬 Refine Output</span>
-                        <span className={styles.chatHint}>Ask for changes or adjustments</span>
+                        <div className={styles.chatHeaderLeft}>
+                          <span>💬 Refine Output</span>
+                          <span className={styles.chatHint}>Ask for changes or adjustments</span>
+                        </div>
+                        {chatMessages.length > 1 && (
+                          <button
+                            className={styles.chatExpandBtn}
+                            onClick={() => setChatExpanded(!chatExpanded)}
+                            title={chatExpanded ? 'Collapse chat' : 'Expand chat'}
+                          >
+                            {chatExpanded ? '↓' : '↑'}
+                          </button>
+                        )}
                       </div>
 
                       {chatMessages.length > 1 && (
-                        <div className={styles.chatHistory}>
+                        <div
+                          className={styles.chatHistory}
+                          ref={chatHistoryRef}
+                          onScroll={handleChatScroll}
+                        >
                           {chatMessages.slice(1).map((msg, idx) => (
                             <div
                               key={idx}
@@ -743,11 +856,36 @@ Please provide an updated version of the content based on their feedback. Mainta
                                 {msg.role === 'user' ? 'You' : 'AI'}
                               </div>
                               <div className={styles.chatContent}>
-                                {msg.role === 'user' ? msg.content : 'Updated the output above ↑'}
+                                {msg.role === 'user'
+                                  ? msg.content
+                                  : (msg.summary || 'Updated the output above ↑')
+                                }
                               </div>
                             </div>
                           ))}
                           <div ref={chatEndRef} />
+
+                          {/* Scroll to bottom button */}
+                          {showScrollToBottom && (
+                            <button
+                              className={styles.scrollToBottomBtn}
+                              onClick={scrollChatToBottom}
+                            >
+                              ↓ New messages
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Streaming indicator in chat */}
+                      {isChatLoading && (
+                        <div className={styles.chatTypingIndicator}>
+                          <div className={styles.typingDots}>
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                          </div>
+                          <span>AI is updating the output...</span>
                         </div>
                       )}
 
