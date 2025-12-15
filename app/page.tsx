@@ -2,6 +2,8 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { skills, Skill } from './skills-data';
+import { UserPreferences } from '../lib/database.types';
+import { buildPreferencesContext } from '../lib/preferences';
 import styles from './page.module.css';
 
 interface UploadedFile {
@@ -120,11 +122,28 @@ export default function Home() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [fetchingUrls, setFetchingUrls] = useState<Set<string>>(new Set());
   const [fetchedUrls, setFetchedUrls] = useState<Map<string, FetchedUrl>>(new Map());
+  const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Load user preferences on mount
+  useEffect(() => {
+    const loadPreferences = async () => {
+      try {
+        const response = await fetch('/api/preferences');
+        const result = await response.json();
+        if (result.success && result.data) {
+          setUserPreferences(result.data);
+        }
+      } catch (error) {
+        console.error('Failed to load preferences:', error);
+      }
+    };
+    loadPreferences();
+  }, []);
 
   // Auto-scroll to bottom of messages
   useEffect(() => {
@@ -373,6 +392,9 @@ export default function Home() {
     // Build prompt
     let fullPrompt = userMessage;
 
+    // Get preferences context
+    const preferencesContext = buildPreferencesContext(userPreferences);
+
     // Add URL content with strong emphasis to use it
     if (fetchedUrlData.length > 0) {
       const urlContext = fetchedUrlData.map((urlData, idx) => {
@@ -415,6 +437,11 @@ ${urlContext}
 ---
 
 Generate the output using ONLY the real content from the website above. Use the {{IMAGE_X_Y}} placeholders for images - they will be automatically replaced with actual images from the source website.`;
+    }
+
+    // Inject user preferences into prompt
+    if (preferencesContext) {
+      fullPrompt = `${preferencesContext}\n${fullPrompt}`;
     }
 
     // Prepare images for API
@@ -633,6 +660,9 @@ Generate the output using ONLY the real content from the website above. Use the 
           </div>
         </div>
         <div className={styles.chatHeaderRight}>
+          <a href="/settings" className={styles.headerLink}>
+            Settings
+          </a>
           <a href="/admin" className={styles.headerLink}>
             Admin
           </a>
