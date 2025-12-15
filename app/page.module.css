@@ -700,6 +700,7 @@
   max-width: 680px;
   margin: 0 auto;
   overflow: hidden;
+  position: relative;
 }
 
 .previewFrame iframe {
@@ -707,6 +708,24 @@
   min-height: 600px;
   border: none;
   display: block;
+  transition: opacity 0.3s ease;
+}
+
+.previewLoading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  z-index: 10;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 
 .codeView {

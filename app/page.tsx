@@ -29,6 +29,7 @@ export default function Home() {
   const [formData, setFormData] = useState<Record<string, Record<string, any>>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [output, setOutput] = useState<{ content: string; format: string } | null>(null);
+  const [previewContent, setPreviewContent] = useState<string>(''); // Debounced preview for iframe
   const [currentView, setCurrentView] = useState<'preview' | 'code'>('preview');
   const [customExpanded, setCustomExpanded] = useState(false);
   const [customInstructions, setCustomInstructions] = useState('');
@@ -43,11 +44,45 @@ export default function Home() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastPreviewUpdateRef = useRef<number>(0);
 
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
+
+  // Debounced preview update for smooth iframe rendering
+  const updatePreview = useCallback((content: string, force: boolean = false) => {
+    const now = Date.now();
+    const timeSinceLastUpdate = now - lastPreviewUpdateRef.current;
+
+    // Clear any pending update
+    if (previewTimeoutRef.current) {
+      clearTimeout(previewTimeoutRef.current);
+    }
+
+    // Force update immediately (for final content) or debounce
+    if (force || timeSinceLastUpdate > 800) {
+      setPreviewContent(content);
+      lastPreviewUpdateRef.current = now;
+    } else {
+      // Schedule update for smoother streaming
+      previewTimeoutRef.current = setTimeout(() => {
+        setPreviewContent(content);
+        lastPreviewUpdateRef.current = Date.now();
+      }, 300);
+    }
+  }, []);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (previewTimeoutRef.current) {
+        clearTimeout(previewTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const updateField = (skillId: string, fieldName: string, value: any) => {
     setFormData((prev) => ({
@@ -270,7 +305,9 @@ export default function Home() {
 
     setIsLoading(true);
     setOutput(null);
+    setPreviewContent('');
     setChatMessages([]);
+    lastPreviewUpdateRef.current = 0;
 
     try {
       const data = formData[activeSkill.id] || {};
@@ -337,8 +374,19 @@ export default function Home() {
         activeSkill.systemPrompt,
         userPrompt,
         imageContents,
-        (content) => setOutput({ content, format: activeSkill.outputFormat })
+        (content) => {
+          setOutput({ content, format: activeSkill.outputFormat });
+          // Debounce preview updates for HTML to avoid iframe flickering
+          if (activeSkill.outputFormat === 'html') {
+            updatePreview(content, false);
+          }
+        }
       );
+
+      // Force final preview update with complete content
+      if (activeSkill.outputFormat === 'html') {
+        updatePreview(finalContent, true);
+      }
 
       // Store initial generation in chat history
       setChatMessages([
@@ -386,6 +434,8 @@ The user wants to modify the output. Their latest request is:
 Please provide an updated version of the content based on their feedback. Maintain the same format (${activeSkill?.outputFormat.toUpperCase()}).`;
 
       let newContent = '';
+      lastPreviewUpdateRef.current = 0;
+
       await streamResponse(
         activeSkill?.systemPrompt || '',
         tweakPrompt,
@@ -393,8 +443,17 @@ Please provide an updated version of the content based on their feedback. Mainta
         (content) => {
           newContent = content;
           setOutput({ content, format: activeSkill?.outputFormat || 'text' });
+          // Debounce preview updates for HTML
+          if (activeSkill?.outputFormat === 'html') {
+            updatePreview(content, false);
+          }
         }
       );
+
+      // Force final preview update
+      if (activeSkill?.outputFormat === 'html') {
+        updatePreview(newContent, true);
+      }
 
       // Add assistant response to chat
       setChatMessages([
@@ -442,6 +501,7 @@ Please provide an updated version of the content based on their feedback. Mainta
   const selectSkill = (skill: Skill) => {
     setActiveSkill(skill);
     setOutput(null);
+    setPreviewContent('');
     setCustomExpanded(false);
     setCustomInstructions(formData[skill.id]?.customInstructions || '');
     setUploadedFiles([]);
@@ -762,9 +822,16 @@ Please provide an updated version of the content based on their feedback. Mainta
                   <div className={styles.outputPreview}>
                     {output.format === 'html' && currentView === 'preview' ? (
                       <div className={styles.previewFrame}>
+                        {isLoading && (
+                          <div className={styles.previewLoading}>
+                            <div className={styles.spinner} />
+                            <span>Generating preview...</span>
+                          </div>
+                        )}
                         <iframe
-                          srcDoc={output.content}
+                          srcDoc={previewContent || output.content}
                           title="Preview"
+                          style={{ opacity: isLoading && !previewContent ? 0.5 : 1 }}
                         />
                       </div>
                     ) : output.format === 'markdown' ? (
