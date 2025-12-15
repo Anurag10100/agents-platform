@@ -1,8 +1,15 @@
 import { NextRequest } from 'next/server';
 
+interface ExtractedImage {
+  url: string;
+  alt: string;
+  base64?: string;
+  mediaType?: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { url } = await request.json();
+    const { url, fetchImages = true } = await request.json();
 
     if (!url) {
       return new Response(
@@ -31,7 +38,6 @@ export async function POST(request: NextRequest) {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
         'Cache-Control': 'no-cache',
       },
       signal: controller.signal,
@@ -56,6 +62,13 @@ export async function POST(request: NextRequest) {
     // Extract main content
     const mainContent = extractMainContent(html);
     const articles = extractArticles(html);
+
+    // Extract and fetch images
+    let images: ExtractedImage[] = [];
+    if (fetchImages) {
+      const imageUrls = extractImageUrls(html, validUrl);
+      images = await fetchImagesAsBase64(imageUrls, validUrl);
+    }
 
     // Build comprehensive content
     let content = '';
@@ -82,7 +95,7 @@ export async function POST(request: NextRequest) {
     // Add extracted articles
     if (articles.length > 0) {
       content += '## Articles & Sections\n\n';
-      articles.forEach((article, idx) => {
+      articles.forEach((article) => {
         if (article.title) {
           content += `### ${article.title}\n\n`;
         }
@@ -107,6 +120,7 @@ export async function POST(request: NextRequest) {
         url: validUrl.toString(),
         title,
         description,
+        images: images.filter(img => img.base64), // Only return images that were successfully fetched
       }),
       { headers: { 'Content-Type': 'application/json' } }
     );
@@ -117,6 +131,163 @@ export async function POST(request: NextRequest) {
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
+}
+
+function extractImageUrls(html: string, baseUrl: URL): ExtractedImage[] {
+  const images: ExtractedImage[] = [];
+  const seen = new Set<string>();
+
+  // Extract OG image first (usually the main image)
+  const ogImage = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i);
+  if (ogImage) {
+    const imgUrl = resolveUrl(ogImage[1], baseUrl);
+    if (imgUrl && !seen.has(imgUrl)) {
+      seen.add(imgUrl);
+      images.push({ url: imgUrl, alt: 'Featured image' });
+    }
+  }
+
+  // Extract images from img tags
+  const imgPattern = /<img[^>]*>/gi;
+  let match;
+
+  while ((match = imgPattern.exec(html)) !== null) {
+    const imgTag = match[0];
+
+    // Get src (try srcset first for higher quality, then src)
+    let src = '';
+    const srcsetMatch = imgTag.match(/srcset=["']([^"']+)["']/i);
+    if (srcsetMatch) {
+      // Get the largest image from srcset
+      const srcset = srcsetMatch[1];
+      const sources = srcset.split(',').map(s => s.trim().split(/\s+/)[0]);
+      src = sources[sources.length - 1] || sources[0];
+    }
+
+    if (!src) {
+      const srcMatch = imgTag.match(/src=["']([^"']+)["']/i);
+      if (srcMatch) {
+        src = srcMatch[1];
+      }
+    }
+
+    // Get alt text
+    const altMatch = imgTag.match(/alt=["']([^"']*)["']/i);
+    const alt = altMatch ? decodeHtmlEntities(altMatch[1]) : '';
+
+    // Skip tiny images, icons, tracking pixels, and data URIs
+    if (!src || src.startsWith('data:')) continue;
+
+    // Skip common non-content images
+    if (
+      src.includes('icon') ||
+      src.includes('logo') ||
+      src.includes('avatar') ||
+      src.includes('sprite') ||
+      src.includes('tracking') ||
+      src.includes('pixel') ||
+      src.includes('badge') ||
+      src.includes('button') ||
+      src.includes('1x1') ||
+      src.includes('spacer')
+    ) continue;
+
+    const imgUrl = resolveUrl(src, baseUrl);
+    if (imgUrl && !seen.has(imgUrl)) {
+      seen.add(imgUrl);
+      images.push({ url: imgUrl, alt });
+    }
+
+    // Limit to 8 images
+    if (images.length >= 8) break;
+  }
+
+  return images;
+}
+
+function resolveUrl(src: string, baseUrl: URL): string | null {
+  try {
+    if (src.startsWith('//')) {
+      return `https:${src}`;
+    }
+    if (src.startsWith('http')) {
+      return src;
+    }
+    // Relative URL
+    return new URL(src, baseUrl.origin).toString();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchImagesAsBase64(images: ExtractedImage[], baseUrl: URL): Promise<ExtractedImage[]> {
+  const results: ExtractedImage[] = [];
+
+  // Fetch images in parallel with timeout
+  const fetchPromises = images.slice(0, 5).map(async (img) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(img.url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'Referer': baseUrl.toString(),
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return null;
+
+      const contentType = response.headers.get('content-type') || '';
+
+      // Only process actual images
+      if (!contentType.startsWith('image/')) return null;
+
+      // Skip SVG (not supported by Claude vision)
+      if (contentType.includes('svg')) return null;
+
+      const buffer = await response.arrayBuffer();
+
+      // Skip tiny images (likely icons/pixels) - less than 5KB
+      if (buffer.byteLength < 5000) return null;
+
+      // Skip very large images - more than 5MB
+      if (buffer.byteLength > 5 * 1024 * 1024) return null;
+
+      const base64 = Buffer.from(buffer).toString('base64');
+
+      // Map content type to Claude-supported types
+      let mediaType = contentType.split(';')[0].trim();
+      if (mediaType === 'image/jpg') mediaType = 'image/jpeg';
+
+      // Only support these types for Claude
+      const supportedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+      if (!supportedTypes.includes(mediaType)) return null;
+
+      return {
+        ...img,
+        base64,
+        mediaType,
+      };
+    } catch (error) {
+      console.error(`Failed to fetch image ${img.url}:`, error);
+      return null;
+    }
+  });
+
+  const fetched = await Promise.all(fetchPromises);
+
+  for (const img of fetched) {
+    if (img) {
+      results.push(img);
+    }
+  }
+
+  return results;
 }
 
 function extractTitle(html: string): string {
@@ -130,15 +301,17 @@ function extractMetaDescription(html: string): string {
   return descMatch ? decodeHtmlEntities(descMatch[1].trim()) : '';
 }
 
-function extractOpenGraph(html: string): { title?: string; description?: string; siteName?: string } {
+function extractOpenGraph(html: string): { title?: string; description?: string; siteName?: string; image?: string } {
   const ogTitle = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i);
   const ogDesc = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i);
   const ogSite = html.match(/<meta[^>]*property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i);
+  const ogImage = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i);
 
   return {
     title: ogTitle ? decodeHtmlEntities(ogTitle[1]) : undefined,
     description: ogDesc ? decodeHtmlEntities(ogDesc[1]) : undefined,
     siteName: ogSite ? decodeHtmlEntities(ogSite[1]) : undefined,
+    image: ogImage ? ogImage[1] : undefined,
   };
 }
 
