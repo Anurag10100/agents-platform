@@ -317,10 +317,15 @@ export default function Home() {
       // Add URL content if available
       let urlContext = '';
       if (urlContent) {
-        const imageNote = urlImages.length > 0
-          ? `\n\n**Note:** ${urlImages.length} image(s) from this website have been extracted and attached for visual context.`
-          : '';
-        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}${imageNote}\n\n---\n\nUse the above website content and images as the primary source for generating the output.`;
+        let imageInfo = '';
+        if (urlImages.length > 0) {
+          imageInfo = `\n\n## IMAGES FROM THIS WEBSITE (embed these in your HTML output):\n`;
+          urlImages.forEach((img, idx) => {
+            imageInfo += `${idx + 1}. URL: ${img.url}${img.alt ? ` | Alt: "${img.alt}"` : ''}\n`;
+          });
+          imageInfo += `\n**IMPORTANT:** Include these images in your HTML output using <img src="URL" alt="description" /> tags. The images are provided above for visual reference.`;
+        }
+        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}${imageInfo}\n\n---\n\nUse the above website content as the primary source. Include the website images in your HTML output using the URLs provided.`;
       }
 
       const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext + urlContext;
