@@ -70,21 +70,36 @@ export default function Home() {
     document.documentElement.setAttribute('data-theme', newTheme);
   };
 
+  // Normalize URL (add https:// if missing)
+  const normalizeUrl = (url: string): string => {
+    if (!url) return '';
+    url = url.trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return 'https://' + url;
+    }
+    return url;
+  };
+
   // Fetch URL content
   const fetchUrlContent = async (url: string) => {
-    if (!url || !url.startsWith('http')) return;
+    const normalizedUrl = normalizeUrl(url);
+    if (!normalizedUrl) return;
 
     setIsFetchingUrl(true);
+    setUrlContent('');
     try {
       const response = await fetch('/api/fetch-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: normalizedUrl }),
       });
 
       const result = await response.json();
       if (response.ok && result.content) {
         setUrlContent(result.content);
+        console.log('Fetched URL content:', result.content.substring(0, 500) + '...');
+      } else {
+        console.error('URL fetch failed:', result.error);
       }
     } catch (error) {
       console.error('Failed to fetch URL:', error);
@@ -95,7 +110,7 @@ export default function Home() {
   // Watch for sourceUrl changes
   useEffect(() => {
     const sourceUrl = formData[activeSkill?.id]?.sourceUrl;
-    if (sourceUrl && sourceUrl.startsWith('http')) {
+    if (sourceUrl && sourceUrl.trim().length > 3) {
       const debounce = setTimeout(() => fetchUrlContent(sourceUrl), 1000);
       return () => clearTimeout(debounce);
     } else {
@@ -533,10 +548,10 @@ Please provide an updated version of the content based on their feedback. Mainta
                       {field.label}
                       {field.required && <span className={styles.required}>*</span>}
                       {field.name === 'sourceUrl' && isFetchingUrl && (
-                        <span className={styles.fetchingBadge}>Fetching...</span>
+                        <span className={styles.fetchingBadge}>Fetching content...</span>
                       )}
                       {field.name === 'sourceUrl' && urlContent && !isFetchingUrl && (
-                        <span className={styles.successBadge}>✓ Loaded</span>
+                        <span className={styles.successBadge}>✓ {Math.round(urlContent.length / 1000)}k chars loaded</span>
                       )}
                     </label>
 
