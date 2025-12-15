@@ -452,13 +452,34 @@
 .fetchingIndicator {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 12px;
+  padding: 12px 16px;
   margin-bottom: 12px;
-  background: rgba(99, 102, 241, 0.1);
-  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 12px;
+}
+
+.fetchingInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fetchingTitle {
   font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.fetchingUrl {
+  font-size: 12px;
   color: var(--accent);
+  font-family: 'SF Mono', 'Monaco', monospace;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Input Wrapper */

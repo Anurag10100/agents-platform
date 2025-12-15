@@ -37,16 +37,29 @@ interface Message {
   isStreaming?: boolean;
 }
 
-// Extract URLs from text
+// Extract URLs from text - handles various formats including bare domains
 function extractUrls(text: string): string[] {
-  const urlPattern = /(?:https?:\/\/|www\.)[^\s<>"{}|\\^`[\]]+/gi;
+  // Match URLs with protocol, www, or bare domains like example.com, sub.example.co.in
+  const urlPattern = /(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+(?:\/[^\s<>"{}|\\^`[\]]*)?/gi;
   const matches = text.match(urlPattern) || [];
-  return matches.map(url => {
-    if (!url.startsWith('http')) {
-      return 'https://' + url;
-    }
-    return url;
-  });
+
+  // Filter out common false positives and normalize URLs
+  return matches
+    .filter(url => {
+      // Must have at least one dot and valid TLD-like ending
+      const parts = url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].split('.');
+      if (parts.length < 2) return false;
+      const tld = parts[parts.length - 1].toLowerCase();
+      // Common TLDs - expand as needed
+      const validTlds = ['com', 'org', 'net', 'edu', 'gov', 'io', 'co', 'in', 'ai', 'dev', 'app', 'xyz', 'info', 'biz', 'online', 'site', 'tech', 'news', 'blog'];
+      return validTlds.includes(tld) || tld.length === 2; // 2-letter country codes
+    })
+    .map(url => {
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return 'https://' + url;
+      }
+      return url;
+    });
 }
 
 // Detect which skill to use based on message content
@@ -360,25 +373,38 @@ export default function Home() {
     // Build prompt
     let fullPrompt = userMessage;
 
-    // Add URL content
+    // Add URL content with strong emphasis to use it
     if (fetchedUrlData.length > 0) {
       const urlContext = fetchedUrlData.map((urlData, idx) => {
-        let context = `\n\n## SOURCE ${idx + 1}: ${urlData.title}\nURL: ${urlData.url}\n\n${urlData.content}`;
+        let context = `\n\n### SOURCE ${idx + 1}: ${urlData.title}\nURL: ${urlData.url}\n\n${urlData.content}`;
 
         // Add image placeholders
         const imagesToEmbed = urlData.images.slice(0, 3);
         if (imagesToEmbed.length > 0) {
-          context += `\n\n### Available Images:\n`;
+          context += `\n\n### Available Images from this source:\n`;
           imagesToEmbed.forEach((img, imgIdx) => {
             context += `- {{IMAGE_${idx + 1}_${imgIdx + 1}}}${img.alt ? ` - ${img.alt}` : ''}\n`;
           });
-          context += `\nUse these image placeholders in your HTML output where appropriate.`;
+          context += `\nInclude these image placeholders in your HTML output.`;
         }
 
         return context;
       }).join('\n\n---\n');
 
-      fullPrompt += `\n\n## REFERENCE CONTENT:${urlContext}\n\n---\nUse the above content as reference for your response.`;
+      fullPrompt = `## IMPORTANT INSTRUCTIONS:
+You MUST create content based on the ACTUAL website content provided below. Do NOT make up generic content.
+Extract real headlines, stories, statistics, quotes, and information from the source material.
+The output should reflect what is actually on the website, not placeholder or invented content.
+
+## USER REQUEST:
+${userMessage}
+
+## ACTUAL WEBSITE CONTENT TO USE:
+${urlContext}
+
+---
+
+Generate the output using ONLY the real content from the website above. Include actual headlines, real statistics, genuine quotes, and true information from the source. Do not invent or placeholder any content.`;
     }
 
     // Prepare images for API
@@ -729,7 +755,10 @@ export default function Home() {
             {fetchingUrls.size > 0 && (
               <div className={styles.fetchingIndicator}>
                 <div className={styles.spinner} />
-                <span>Fetching content from URL...</span>
+                <div className={styles.fetchingInfo}>
+                  <span className={styles.fetchingTitle}>Fetching website content...</span>
+                  <span className={styles.fetchingUrl}>{Array.from(fetchingUrls)[0]}</span>
+                </div>
               </div>
             )}
 
