@@ -24,6 +24,75 @@ interface FetchedImage {
   mediaType: string;
 }
 
+const enhanceHtmlImages = (html: string, urlImages: FetchedImage[]): string => {
+  if (!html || !urlImages.length) return html;
+  if (typeof window === 'undefined') return html;
+
+  const createKey = (url: string) => {
+    try {
+      const parsed = new URL(url, window.location.href);
+      const filename = parsed.pathname.split('/').filter(Boolean).pop() || parsed.pathname;
+      return `${parsed.hostname}/${filename}`.toLowerCase();
+    } catch {
+      return url.replace(/[?#].*$/, '').split('/').pop()?.toLowerCase() || url;
+    }
+  };
+
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    const replacements = urlImages
+      .filter((img) => img.base64 && img.mediaType)
+      .map((img) => ({
+        original: img.url,
+        key: createKey(img.url),
+        data: `data:${img.mediaType};base64,${img.base64}`,
+      }));
+
+    const getDataUri = (src: string) => {
+      const normalizedSrc = src.replace(/[?#].*$/, '');
+      const direct = replacements.find((img) => img.original === src || img.original === normalizedSrc);
+      if (direct) return direct.data;
+
+      const keyMatch = replacements.find((img) => img.key === createKey(src));
+      return keyMatch?.data;
+    };
+
+    doc.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src');
+      if (!src) return;
+
+      const dataUri = getDataUri(src);
+      if (dataUri) {
+        img.setAttribute('src', dataUri);
+      }
+
+      const srcset = img.getAttribute('srcset');
+      if (srcset) {
+        const entries = srcset.split(',').map((entry) => entry.trim().split(' ')[0]).filter(Boolean);
+        const match = entries.map(getDataUri).find(Boolean);
+        if (match) {
+          img.setAttribute('srcset', match);
+          if (!img.getAttribute('src')) {
+            img.setAttribute('src', match);
+          }
+        }
+      }
+    });
+
+    const serialized = doc.documentElement.outerHTML || html;
+    // If parsing produced an empty document, fall back to original
+    if (serialized.trim() === '<html><head></head><body></body></html>') {
+      return html;
+    }
+
+    return serialized;
+  } catch {
+    return html;
+  }
+};
+
 export default function Home() {
   const [activeSkill, setActiveSkill] = useState<Skill>(skills[0]);
   const [formData, setFormData] = useState<Record<string, Record<string, any>>>({});
@@ -463,6 +532,10 @@ Please provide an updated version of the content based on their feedback. Mainta
       .replace(/\n\n/g, '</p><p>');
   };
 
+  const renderedHtml = output?.format === 'html'
+    ? enhanceHtmlImages(output.content, urlImages)
+    : output?.content;
+
   return (
     <div className={styles.layout}>
       {/* Sidebar */}
@@ -763,7 +836,7 @@ Please provide an updated version of the content based on their feedback. Mainta
                     {output.format === 'html' && currentView === 'preview' ? (
                       <div className={styles.previewFrame}>
                         <iframe
-                          srcDoc={output.content}
+                          srcDoc={renderedHtml || ''}
                           title="Preview"
                         />
                       </div>

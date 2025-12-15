@@ -213,11 +213,27 @@ function resolveUrl(src: string, baseUrl: URL): string | null {
     if (src.startsWith('http')) {
       return src;
     }
-    // Relative URL
-    return new URL(src, baseUrl.origin).toString();
+    // Relative URL (preserve paths with ../)
+    return new URL(src, baseUrl).toString();
   } catch {
     return null;
   }
+}
+
+function inferMediaType(url: string, contentType: string | null): string | null {
+  const type = contentType?.split(';')[0].trim();
+  if (type && type.startsWith('image/')) {
+    return type === 'image/jpg' ? 'image/jpeg' : type;
+  }
+
+  // Fall back to file extension when headers are missing or incorrect
+  const lowerUrl = url.split('?')[0].toLowerCase();
+  if (lowerUrl.endsWith('.jpg') || lowerUrl.endsWith('.jpeg')) return 'image/jpeg';
+  if (lowerUrl.endsWith('.png')) return 'image/png';
+  if (lowerUrl.endsWith('.gif')) return 'image/gif';
+  if (lowerUrl.endsWith('.webp')) return 'image/webp';
+
+  return null;
 }
 
 async function fetchImagesAsBase64(images: ExtractedImage[], baseUrl: URL): Promise<ExtractedImage[]> {
@@ -242,13 +258,11 @@ async function fetchImagesAsBase64(images: ExtractedImage[], baseUrl: URL): Prom
 
       if (!response.ok) return null;
 
-      const contentType = response.headers.get('content-type') || '';
+      const contentType = response.headers.get('content-type');
+      const mediaType = inferMediaType(img.url, contentType);
 
       // Only process actual images
-      if (!contentType.startsWith('image/')) return null;
-
-      // Skip SVG (not supported by Claude vision)
-      if (contentType.includes('svg')) return null;
+      if (!mediaType || mediaType.includes('svg')) return null;
 
       const buffer = await response.arrayBuffer();
 
@@ -259,10 +273,6 @@ async function fetchImagesAsBase64(images: ExtractedImage[], baseUrl: URL): Prom
       if (buffer.byteLength > 5 * 1024 * 1024) return null;
 
       const base64 = Buffer.from(buffer).toString('base64');
-
-      // Map content type to Claude-supported types
-      let mediaType = contentType.split(';')[0].trim();
-      if (mediaType === 'image/jpg') mediaType = 'image/jpeg';
 
       // Only support these types for Claude
       const supportedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
