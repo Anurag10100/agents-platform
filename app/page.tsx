@@ -17,6 +17,13 @@ interface ChatMessage {
   content: string;
 }
 
+interface FetchedImage {
+  url: string;
+  alt: string;
+  base64: string;
+  mediaType: string;
+}
+
 export default function Home() {
   const [activeSkill, setActiveSkill] = useState<Skill>(skills[0]);
   const [formData, setFormData] = useState<Record<string, Record<string, any>>>({});
@@ -29,6 +36,7 @@ export default function Home() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [urlContent, setUrlContent] = useState<string>('');
+  const [urlImages, setUrlImages] = useState<FetchedImage[]>([]);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -87,16 +95,21 @@ export default function Home() {
 
     setIsFetchingUrl(true);
     setUrlContent('');
+    setUrlImages([]);
     try {
       const response = await fetch('/api/fetch-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: normalizedUrl }),
+        body: JSON.stringify({ url: normalizedUrl, fetchImages: true }),
       });
 
       const result = await response.json();
       if (response.ok && result.content) {
         setUrlContent(result.content);
+        if (result.images && result.images.length > 0) {
+          setUrlImages(result.images);
+          console.log(`Fetched ${result.images.length} images from URL`);
+        }
         console.log('Fetched URL content:', result.content.substring(0, 500) + '...');
       } else {
         console.error('URL fetch failed:', result.error);
@@ -115,6 +128,7 @@ export default function Home() {
       return () => clearTimeout(debounce);
     } else {
       setUrlContent('');
+      setUrlImages([]);
     }
   }, [formData, activeSkill?.id]);
 
@@ -265,6 +279,7 @@ export default function Home() {
       let fileContext = '';
       const imageContents: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
 
+      // Add uploaded images
       for (const uploadedFile of uploadedFiles) {
         if (uploadedFile.type === 'image' && uploadedFile.base64) {
           const matches = uploadedFile.base64.match(/^data:(.+);base64,(.+)$/);
@@ -281,6 +296,20 @@ export default function Home() {
         }
       }
 
+      // Add images fetched from URL
+      for (const urlImage of urlImages) {
+        if (urlImage.base64 && urlImage.mediaType) {
+          imageContents.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: urlImage.mediaType,
+              data: urlImage.base64,
+            },
+          });
+        }
+      }
+
       if (uploadedFiles.length > 0) {
         fileContext = `\n\n## ATTACHED FILES (${uploadedFiles.length} file${uploadedFiles.length > 1 ? 's' : ''}):\n${uploadedFiles.map(f => `- ${f.file.name} (${f.type.toUpperCase()})`).join('\n')}\n\nPlease analyze and incorporate the content from these attached files as context for your response.`;
       }
@@ -288,7 +317,10 @@ export default function Home() {
       // Add URL content if available
       let urlContext = '';
       if (urlContent) {
-        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}\n\n---\n\nUse the above website content as the primary source for generating the output.`;
+        const imageNote = urlImages.length > 0
+          ? `\n\n**Note:** ${urlImages.length} image(s) from this website have been extracted and attached for visual context.`
+          : '';
+        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}${imageNote}\n\n---\n\nUse the above website content and images as the primary source for generating the output.`;
       }
 
       const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext + urlContext;
@@ -409,6 +441,7 @@ Please provide an updated version of the content based on their feedback. Mainta
     setCustomInstructions(formData[skill.id]?.customInstructions || '');
     setUploadedFiles([]);
     setUrlContent('');
+    setUrlImages([]);
     setChatMessages([]);
     setChatInput('');
   };
@@ -551,7 +584,9 @@ Please provide an updated version of the content based on their feedback. Mainta
                         <span className={styles.fetchingBadge}>Fetching content...</span>
                       )}
                       {field.name === 'sourceUrl' && urlContent && !isFetchingUrl && (
-                        <span className={styles.successBadge}>✓ {Math.round(urlContent.length / 1000)}k chars loaded</span>
+                        <span className={styles.successBadge}>
+                          ✓ {Math.round(urlContent.length / 1000)}k chars{urlImages.length > 0 ? ` + ${urlImages.length} img` : ''}
+                        </span>
                       )}
                     </label>
 
