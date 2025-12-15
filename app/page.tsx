@@ -84,6 +84,32 @@ export default function Home() {
     };
   }, []);
 
+  // Log generation to admin dashboard
+  const logGeneration = async (logData: {
+    skillId: string;
+    skillName: string;
+    inputData: Record<string, any>;
+    sourceUrl?: string;
+    customInstructions?: string;
+    outputFormat: string;
+    output: string;
+    imagesCount: number;
+    urlImagesCount: number;
+    durationMs: number;
+    status: 'success' | 'error';
+    error?: string;
+  }) => {
+    try {
+      await fetch('/api/admin/log-generation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(logData),
+      });
+    } catch (error) {
+      console.error('Failed to log generation:', error);
+    }
+  };
+
   const updateField = (skillId: string, fieldName: string, value: any) => {
     setFormData((prev) => ({
       ...prev,
@@ -370,6 +396,8 @@ export default function Home() {
       setOutput({ content: '', format: activeSkill.outputFormat });
       setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
 
+      const startTime = Date.now();
+
       const finalContent = await streamResponse(
         activeSkill.systemPrompt,
         userPrompt,
@@ -383,6 +411,8 @@ export default function Home() {
         }
       );
 
+      const durationMs = Date.now() - startTime;
+
       // Force final preview update with complete content
       if (activeSkill.outputFormat === 'html') {
         updatePreview(finalContent, true);
@@ -393,10 +423,39 @@ export default function Home() {
         { role: 'assistant', content: finalContent }
       ]);
 
+      // Log generation to admin dashboard
+      logGeneration({
+        skillId: activeSkill.id,
+        skillName: activeSkill.name,
+        inputData: data,
+        sourceUrl: data.sourceUrl,
+        customInstructions: customInstructions.trim() || undefined,
+        outputFormat: activeSkill.outputFormat,
+        output: finalContent,
+        imagesCount: uploadedFiles.filter(f => f.type === 'image').length,
+        urlImagesCount: urlImages.length,
+        durationMs,
+        status: 'success',
+      });
+
     } catch (err: any) {
       setOutput({
         content: `Error: ${err.message}`,
         format: 'text',
+      });
+
+      // Log error to admin dashboard
+      logGeneration({
+        skillId: activeSkill.id,
+        skillName: activeSkill.name,
+        inputData: formData[activeSkill.id] || {},
+        outputFormat: activeSkill.outputFormat,
+        output: '',
+        imagesCount: uploadedFiles.filter(f => f.type === 'image').length,
+        urlImagesCount: urlImages.length,
+        durationMs: 0,
+        status: 'error',
+        error: err.message,
       });
     }
 
@@ -552,6 +611,9 @@ Please provide an updated version of the content based on their feedback. Mainta
         </nav>
 
         <div className={styles.sidebarFooter}>
+          <a href="/admin" className={styles.adminLink}>
+            📊 Admin Dashboard
+          </a>
           <button className={styles.themeToggle} onClick={toggleTheme}>
             {theme === 'light' ? '🌙' : '☀️'} {theme === 'light' ? 'Dark' : 'Light'} Mode
           </button>
