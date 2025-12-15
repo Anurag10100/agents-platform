@@ -6,200 +6,163 @@ import styles from './page.module.css';
 
 interface UploadedFile {
   id: string;
-  file: File;
-  preview?: string;
-  base64?: string;
-  type: 'image' | 'pdf';
-}
-
-interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface FetchedImage {
-  url: string;
-  alt: string;
+  name: string;
+  size: number;
   base64: string;
-  mediaType: string;
+  type: 'image' | 'pdf';
+  preview?: string;
+}
+
+interface FetchedUrl {
+  url: string;
+  title: string;
+  content: string;
+  images: Array<{
+    url: string;
+    alt: string;
+    base64: string;
+    mediaType: string;
+  }>;
+}
+
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  files?: UploadedFile[];
+  urls?: FetchedUrl[];
+  outputFormat?: 'html' | 'markdown' | 'text';
+  skillUsed?: string;
+  timestamp: Date;
+  isStreaming?: boolean;
+}
+
+// Extract URLs from text
+function extractUrls(text: string): string[] {
+  const urlPattern = /(?:https?:\/\/|www\.)[^\s<>"{}|\\^`[\]]+/gi;
+  const matches = text.match(urlPattern) || [];
+  return matches.map(url => {
+    if (!url.startsWith('http')) {
+      return 'https://' + url;
+    }
+    return url;
+  });
+}
+
+// Detect which skill to use based on message content
+function detectSkill(message: string): Skill | null {
+  const lower = message.toLowerCase();
+
+  // Newsletter keywords
+  if (lower.includes('newsletter') || lower.includes('email blast') || lower.includes('morning brew') ||
+      lower.includes('digest email') || lower.includes('email newsletter')) {
+    return skills.find(s => s.id === 'editorial-newsletter') || null;
+  }
+
+  // Research keywords
+  if (lower.includes('research') || lower.includes('analyze') || lower.includes('deep dive') ||
+      lower.includes('trends') || lower.includes('analysis') || lower.includes('report on')) {
+    return skills.find(s => s.id === 'research-agent') || null;
+  }
+
+  // Speaker/invitation keywords
+  if (lower.includes('speaker') || lower.includes('invitation') || lower.includes('invite') ||
+      lower.includes('conference email') || lower.includes('event email') || lower.includes('mailer')) {
+    return skills.find(s => s.id === 'speaker-mailer') || null;
+  }
+
+  // Daily briefing keywords
+  if (lower.includes('daily briefing') || lower.includes('news briefing') || lower.includes('daily news') ||
+      lower.includes('sector news') || lower.includes('today\'s news')) {
+    return skills.find(s => s.id === 'daily-briefing') || null;
+  }
+
+  // Content transformation keywords
+  if (lower.includes('transform') || lower.includes('convert to') || lower.includes('make it') ||
+      lower.includes('linkedin') || lower.includes('twitter') || lower.includes('thread') ||
+      lower.includes('press release') || lower.includes('social media')) {
+    return skills.find(s => s.id === 'content-transformer') || null;
+  }
+
+  // Presentation keywords
+  if (lower.includes('presentation') || lower.includes('slides') || lower.includes('ppt') ||
+      lower.includes('deck') || lower.includes('powerpoint')) {
+    return skills.find(s => s.id === 'presentation') || null;
+  }
+
+  // Default to newsletter for content generation
+  return skills.find(s => s.id === 'editorial-newsletter') || null;
 }
 
 export default function Home() {
-  const [activeSkill, setActiveSkill] = useState<Skill>(skills[0]);
-  const [formData, setFormData] = useState<Record<string, Record<string, any>>>({});
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [output, setOutput] = useState<{ content: string; format: string } | null>(null);
-  const [previewContent, setPreviewContent] = useState<string>(''); // Debounced preview for iframe
-  const [currentView, setCurrentView] = useState<'preview' | 'code'>('preview');
-  const [customExpanded, setCustomExpanded] = useState(false);
-  const [customInstructions, setCustomInstructions] = useState('');
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<UploadedFile[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [urlContent, setUrlContent] = useState<string>('');
-  const [urlImages, setUrlImages] = useState<FetchedImage[]>([]);
-  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [currentOutput, setCurrentOutput] = useState<{ content: string; format: string } | null>(null);
+  const [previewContent, setPreviewContent] = useState('');
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewTab, setPreviewTab] = useState<'preview' | 'code'>('preview');
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [fetchingUrls, setFetchingUrls] = useState<Set<string>>(new Set());
+  const [fetchedUrls, setFetchedUrls] = useState<Map<string, FetchedUrl>>(new Map());
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastPreviewUpdateRef = useRef<number>(0);
 
-  // Auto-scroll chat
+  // Auto-scroll to bottom of messages
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  // Debounced preview update for smooth iframe rendering
-  const updatePreview = useCallback((content: string, force: boolean = false) => {
-    const now = Date.now();
-    const timeSinceLastUpdate = now - lastPreviewUpdateRef.current;
-
-    // Clear any pending update
-    if (previewTimeoutRef.current) {
-      clearTimeout(previewTimeoutRef.current);
-    }
-
-    // Force update immediately (for final content) or debounce
-    if (force || timeSinceLastUpdate > 800) {
-      setPreviewContent(content);
-      lastPreviewUpdateRef.current = now;
-    } else {
-      // Schedule update for smoother streaming
-      previewTimeoutRef.current = setTimeout(() => {
-        setPreviewContent(content);
-        lastPreviewUpdateRef.current = Date.now();
-      }, 300);
-    }
-  }, []);
-
-  // Cleanup timeout on unmount
+  // Auto-resize textarea
   useEffect(() => {
-    return () => {
-      if (previewTimeoutRef.current) {
-        clearTimeout(previewTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  // Log generation to admin dashboard
-  const logGeneration = async (logData: {
-    skillId: string;
-    skillName: string;
-    inputData: Record<string, any>;
-    sourceUrl?: string;
-    customInstructions?: string;
-    outputFormat: string;
-    output: string;
-    imagesCount: number;
-    urlImagesCount: number;
-    durationMs: number;
-    status: 'success' | 'error';
-    error?: string;
-  }) => {
-    try {
-      await fetch('/api/admin/log-generation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(logData),
-      });
-    } catch (error) {
-      console.error('Failed to log generation:', error);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
     }
-  };
+  }, [inputValue]);
 
-  const updateField = (skillId: string, fieldName: string, value: any) => {
-    setFormData((prev) => ({
-      ...prev,
-      [skillId]: {
-        ...prev[skillId],
-        [fieldName]: value,
-      },
-    }));
-  };
-
-  const toggleMulti = (skillId: string, fieldName: string, value: string) => {
-    const current = formData[skillId]?.[fieldName] || [];
-    const updated = current.includes(value)
-      ? current.filter((v: string) => v !== value)
-      : [...current, value];
-    updateField(skillId, fieldName, updated);
-  };
-
-  const addSuggestion = (text: string) => {
-    const current = customInstructions.trim();
-    setCustomInstructions(current ? `${current}\n• ${text}` : `• ${text}`);
-  };
-
+  // Toggle theme
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
     document.documentElement.setAttribute('data-theme', newTheme);
   };
 
-  // Normalize URL (add https:// if missing)
-  const normalizeUrl = (url: string): string => {
-    if (!url) return '';
-    url = url.trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      return 'https://' + url;
-    }
-    return url;
-  };
-
   // Fetch URL content
-  const fetchUrlContent = async (url: string) => {
-    const normalizedUrl = normalizeUrl(url);
-    if (!normalizedUrl) return;
-
-    setIsFetchingUrl(true);
-    setUrlContent('');
-    setUrlImages([]);
+  const fetchUrlContent = async (url: string): Promise<FetchedUrl | null> => {
     try {
       const response = await fetch('/api/fetch-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: normalizedUrl, fetchImages: true }),
+        body: JSON.stringify({ url, fetchImages: true }),
       });
 
       const result = await response.json();
       if (response.ok && result.content) {
-        setUrlContent(result.content);
-        if (result.images && result.images.length > 0) {
-          setUrlImages(result.images);
-          console.log(`Fetched ${result.images.length} images from URL`);
-        }
-        console.log('Fetched URL content:', result.content.substring(0, 500) + '...');
-      } else {
-        console.error('URL fetch failed:', result.error);
+        return {
+          url: result.url || url,
+          title: result.title || url,
+          content: result.content,
+          images: result.images || [],
+        };
       }
     } catch (error) {
       console.error('Failed to fetch URL:', error);
     }
-    setIsFetchingUrl(false);
+    return null;
   };
 
-  // Watch for sourceUrl changes
-  useEffect(() => {
-    const sourceUrl = formData[activeSkill?.id]?.sourceUrl;
-    if (sourceUrl && sourceUrl.trim().length > 3) {
-      const debounce = setTimeout(() => fetchUrlContent(sourceUrl), 1000);
-      return () => clearTimeout(debounce);
-    } else {
-      setUrlContent('');
-      setUrlImages([]);
-    }
-  }, [formData, activeSkill?.id]);
-
-  // File upload handlers
+  // Process file for upload
   const processFile = useCallback(async (file: File): Promise<UploadedFile | null> => {
     const isImage = file.type.startsWith('image/');
     const isPdf = file.type === 'application/pdf';
 
     if (!isImage && !isPdf) {
-      alert('Please upload images (PNG, JPG, WebP) or PDF files only.');
       return null;
     }
 
@@ -212,33 +175,35 @@ export default function Home() {
       const reader = new FileReader();
       reader.onload = (e) => {
         const base64 = e.target?.result as string;
-        const uploadedFile: UploadedFile = {
+        resolve({
           id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          file,
+          name: file.name,
+          size: file.size,
           base64,
           type: isImage ? 'image' : 'pdf',
           preview: isImage ? base64 : undefined,
-        };
-        resolve(uploadedFile);
+        });
       };
       reader.readAsDataURL(file);
     });
   }, []);
 
+  // Handle file selection
   const handleFileSelect = useCallback(async (files: FileList | null) => {
     if (!files) return;
 
     const newFiles: UploadedFile[] = [];
-    for (let i = 0; i < files.length; i++) {
+    for (let i = 0; i < Math.min(files.length, 5); i++) {
       const processed = await processFile(files[i]);
       if (processed) {
         newFiles.push(processed);
       }
     }
 
-    setUploadedFiles((prev) => [...prev, ...newFiles]);
+    setAttachedFiles((prev) => [...prev, ...newFiles].slice(0, 5));
   }, [processFile]);
 
+  // Drag and drop handlers
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
@@ -255,23 +220,33 @@ export default function Home() {
     setIsDragOver(false);
   }, []);
 
-  const removeFile = useCallback((id: string) => {
-    setUploadedFiles((prev) => prev.filter((f) => f.id !== id));
-  }, []);
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  // Remove attached file
+  const removeFile = (id: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // Stream response handler
+  // Update preview with debouncing
+  const updatePreview = useCallback((content: string, force: boolean = false) => {
+    if (previewTimeoutRef.current) {
+      clearTimeout(previewTimeoutRef.current);
+    }
+
+    if (force) {
+      setPreviewContent(content);
+    } else {
+      previewTimeoutRef.current = setTimeout(() => {
+        setPreviewContent(content);
+      }, 300);
+    }
+  }, []);
+
+  // Stream response from API
   const streamResponse = async (
     systemPrompt: string,
     userPrompt: string,
     images: any[],
     onChunk: (text: string) => void
-  ) => {
+  ): Promise<string> => {
     const response = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -326,26 +301,94 @@ export default function Home() {
     }
   };
 
-  const generate = async () => {
-    if (!activeSkill) return;
+  // Send message
+  const sendMessage = async () => {
+    if ((!inputValue.trim() && attachedFiles.length === 0) || isLoading) return;
 
+    const userMessage = inputValue.trim();
+    setInputValue('');
     setIsLoading(true);
-    setOutput(null);
-    setPreviewContent('');
-    setChatMessages([]);
-    lastPreviewUpdateRef.current = 0;
 
-    try {
-      const data = formData[activeSkill.id] || {};
+    // Detect URLs in message
+    const urls = extractUrls(userMessage);
+    const urlsToFetch = urls.filter(url => !fetchedUrls.has(url));
 
-      // Build file context for the prompt
-      let fileContext = '';
-      const imageContents: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
+    // Create user message
+    const userMsgId = `msg-${Date.now()}`;
+    const newUserMessage: Message = {
+      id: userMsgId,
+      role: 'user',
+      content: userMessage,
+      files: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
+      timestamp: new Date(),
+    };
 
-      // Add uploaded images
-      for (const uploadedFile of uploadedFiles) {
-        if (uploadedFile.type === 'image' && uploadedFile.base64) {
-          const matches = uploadedFile.base64.match(/^data:(.+);base64,(.+)$/);
+    setMessages((prev) => [...prev, newUserMessage]);
+    setAttachedFiles([]);
+
+    // Fetch URLs if any
+    let fetchedUrlData: FetchedUrl[] = [];
+    if (urlsToFetch.length > 0) {
+      setFetchingUrls(new Set(urlsToFetch));
+
+      const fetchPromises = urlsToFetch.map(async (url) => {
+        const data = await fetchUrlContent(url);
+        if (data) {
+          setFetchedUrls((prev) => new Map(prev).set(url, data));
+          return data;
+        }
+        return null;
+      });
+
+      const results = await Promise.all(fetchPromises);
+      fetchedUrlData = results.filter((r): r is FetchedUrl => r !== null);
+      setFetchingUrls(new Set());
+    }
+
+    // Add already fetched URLs
+    for (const url of urls) {
+      const cached = fetchedUrls.get(url);
+      if (cached && !fetchedUrlData.find(u => u.url === cached.url)) {
+        fetchedUrlData.push(cached);
+      }
+    }
+
+    // Detect skill to use
+    const detectedSkill = detectSkill(userMessage);
+    const skill = detectedSkill || skills[0];
+
+    // Build prompt
+    let fullPrompt = userMessage;
+
+    // Add URL content
+    if (fetchedUrlData.length > 0) {
+      const urlContext = fetchedUrlData.map((urlData, idx) => {
+        let context = `\n\n## SOURCE ${idx + 1}: ${urlData.title}\nURL: ${urlData.url}\n\n${urlData.content}`;
+
+        // Add image placeholders
+        const imagesToEmbed = urlData.images.slice(0, 3);
+        if (imagesToEmbed.length > 0) {
+          context += `\n\n### Available Images:\n`;
+          imagesToEmbed.forEach((img, imgIdx) => {
+            context += `- {{IMAGE_${idx + 1}_${imgIdx + 1}}}${img.alt ? ` - ${img.alt}` : ''}\n`;
+          });
+          context += `\nUse these image placeholders in your HTML output where appropriate.`;
+        }
+
+        return context;
+      }).join('\n\n---\n');
+
+      fullPrompt += `\n\n## REFERENCE CONTENT:${urlContext}\n\n---\nUse the above content as reference for your response.`;
+    }
+
+    // Prepare images for API
+    const imageContents: any[] = [];
+
+    // Add attached files
+    if (newUserMessage.files) {
+      for (const file of newUserMessage.files) {
+        if (file.type === 'image' && file.base64) {
+          const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
           if (matches) {
             imageContents.push({
               type: 'image',
@@ -358,646 +401,436 @@ export default function Home() {
           }
         }
       }
+    }
 
-      // Add images fetched from URL
-      for (const urlImage of urlImages) {
-        if (urlImage.base64 && urlImage.mediaType) {
+    // Add URL images
+    for (const urlData of fetchedUrlData) {
+      for (const img of urlData.images.slice(0, 2)) {
+        if (img.base64 && img.mediaType) {
           imageContents.push({
             type: 'image',
             source: {
               type: 'base64',
-              media_type: urlImage.mediaType,
-              data: urlImage.base64,
+              media_type: img.mediaType,
+              data: img.base64,
             },
           });
         }
       }
+    }
 
-      if (uploadedFiles.length > 0) {
-        fileContext = `\n\n## ATTACHED FILES (${uploadedFiles.length} file${uploadedFiles.length > 1 ? 's' : ''}):\n${uploadedFiles.map(f => `- ${f.file.name} (${f.type.toUpperCase()})`).join('\n')}\n\nPlease analyze and incorporate the content from these attached files as context for your response.`;
-      }
+    // Create streaming assistant message
+    const assistantMsgId = `msg-${Date.now()}-assistant`;
+    const assistantMessage: Message = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      outputFormat: skill.outputFormat,
+      skillUsed: skill.name,
+      timestamp: new Date(),
+      isStreaming: true,
+    };
 
-      // Add URL content if available
-      let urlContext = '';
-      // Limit to 3 images for embedding
-      const imagesToEmbed = urlImages.slice(0, 3);
-      if (urlContent) {
-        let imageInfo = '';
-        if (imagesToEmbed.length > 0) {
-          imageInfo = `\n\n## WEBSITE IMAGES:\n`;
-          imageInfo += `${imagesToEmbed.length} image(s) are available from the website. Use these placeholder tags in your HTML output:\n`;
-          imagesToEmbed.forEach((img, idx) => {
-            imageInfo += `- {{IMAGE_${idx + 1}}}${img.alt ? ` - ${img.alt}` : ''}\n`;
-          });
-          imageInfo += `\nIMPORTANT: Place {{IMAGE_1}}, {{IMAGE_2}}, etc. where you want images to appear. They will be automatically replaced with actual images. Use them like: <div>{{IMAGE_1}}</div>`;
-        }
-        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}${imageInfo}\n\n---\n\nGenerate the output using this website content.${imagesToEmbed.length > 0 ? ' Include the image placeholders ({{IMAGE_1}}, {{IMAGE_2}}, etc.) in appropriate places in your HTML.' : ''}`;
-      }
+    setMessages((prev) => [...prev, assistantMessage]);
+    setShowPreview(true);
+    setCurrentOutput({ content: '', format: skill.outputFormat });
 
-      // Function to replace image placeholders with actual base64 data URLs
-      const replaceImagePlaceholders = (html: string): string => {
-        let result = html;
-        imagesToEmbed.forEach((img, idx) => {
-          const placeholder = `{{IMAGE_${idx + 1}}}`;
+    // Function to replace image placeholders
+    const replaceImagePlaceholders = (html: string): string => {
+      let result = html;
+      fetchedUrlData.forEach((urlData, urlIdx) => {
+        urlData.images.slice(0, 3).forEach((img, imgIdx) => {
+          const placeholder = `{{IMAGE_${urlIdx + 1}_${imgIdx + 1}}}`;
           const dataUrl = `data:${img.mediaType};base64,${img.base64}`;
-          const imgTag = `<img src="${dataUrl}" alt="${img.alt || 'Image from source'}" style="max-width:100%;height:auto;display:block;margin:16px auto;border-radius:8px;" />`;
+          const imgTag = `<img src="${dataUrl}" alt="${img.alt || 'Image'}" style="max-width:100%;height:auto;display:block;margin:16px auto;border-radius:8px;" />`;
           result = result.split(placeholder).join(imgTag);
         });
-        return result;
-      };
+      });
+      return result;
+    };
 
-      const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext + urlContext;
-
-      setOutput({ content: '', format: activeSkill.outputFormat });
-      setCurrentView(activeSkill.outputFormat === 'html' ? 'preview' : 'code');
-
-      const startTime = Date.now();
-
+    try {
       const rawContent = await streamResponse(
-        activeSkill.systemPrompt,
-        userPrompt,
+        skill.systemPrompt,
+        fullPrompt,
         imageContents,
         (content) => {
-          // Replace image placeholders in real-time during streaming
-          const processedContent = imagesToEmbed.length > 0 ? replaceImagePlaceholders(content) : content;
-          setOutput({ content: processedContent, format: activeSkill.outputFormat });
-          // Debounce preview updates for HTML to avoid iframe flickering
-          if (activeSkill.outputFormat === 'html') {
+          const processedContent = replaceImagePlaceholders(content);
+
+          // Update message
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId
+                ? { ...msg, content: processedContent }
+                : msg
+            )
+          );
+
+          // Update preview
+          setCurrentOutput({ content: processedContent, format: skill.outputFormat });
+          if (skill.outputFormat === 'html') {
             updatePreview(processedContent, false);
           }
         }
       );
 
-      const durationMs = Date.now() - startTime;
+      const finalContent = replaceImagePlaceholders(rawContent);
 
-      // Process final content with image placeholders replaced
-      const finalContent = imagesToEmbed.length > 0 ? replaceImagePlaceholders(rawContent) : rawContent;
+      // Finalize message
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? { ...msg, content: finalContent, isStreaming: false }
+            : msg
+        )
+      );
 
-      // Force final preview update with complete content
-      if (activeSkill.outputFormat === 'html') {
+      setCurrentOutput({ content: finalContent, format: skill.outputFormat });
+      if (skill.outputFormat === 'html') {
         updatePreview(finalContent, true);
+      } else {
+        setPreviewContent(finalContent);
       }
 
-      // Update output with final processed content
-      setOutput({ content: finalContent, format: activeSkill.outputFormat });
+      // Log generation
+      try {
+        await fetch('/api/admin/log-generation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            skillId: skill.id,
+            skillName: skill.name,
+            inputData: { message: userMessage },
+            sourceUrl: fetchedUrlData[0]?.url,
+            outputFormat: skill.outputFormat,
+            output: finalContent,
+            imagesCount: imageContents.length,
+            urlImagesCount: fetchedUrlData.reduce((acc, u) => acc + u.images.length, 0),
+            durationMs: Date.now() - newUserMessage.timestamp.getTime(),
+            status: 'success',
+          }),
+        });
+      } catch (e) {
+        console.error('Failed to log generation:', e);
+      }
 
-      // Store initial generation in chat history
-      setChatMessages([
-        { role: 'assistant', content: finalContent }
-      ]);
-
-      // Log generation to admin dashboard
-      logGeneration({
-        skillId: activeSkill.id,
-        skillName: activeSkill.name,
-        inputData: data,
-        sourceUrl: data.sourceUrl,
-        customInstructions: customInstructions.trim() || undefined,
-        outputFormat: activeSkill.outputFormat,
-        output: finalContent,
-        imagesCount: uploadedFiles.filter(f => f.type === 'image').length,
-        urlImagesCount: urlImages.length,
-        durationMs,
-        status: 'success',
-      });
-
-    } catch (err: any) {
-      setOutput({
-        content: `Error: ${err.message}`,
-        format: 'text',
-      });
-
-      // Log error to admin dashboard
-      logGeneration({
-        skillId: activeSkill.id,
-        skillName: activeSkill.name,
-        inputData: formData[activeSkill.id] || {},
-        outputFormat: activeSkill.outputFormat,
-        output: '',
-        imagesCount: uploadedFiles.filter(f => f.type === 'image').length,
-        urlImagesCount: urlImages.length,
-        durationMs: 0,
-        status: 'error',
-        error: err.message,
-      });
+    } catch (error: any) {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? { ...msg, content: `Error: ${error.message}`, isStreaming: false, outputFormat: 'text' }
+            : msg
+        )
+      );
     }
 
     setIsLoading(false);
   };
 
-  // Chat for iterative tweaks
-  const sendChatMessage = async () => {
-    if (!chatInput.trim() || !output || isChatLoading) return;
-
-    const userMessage = chatInput.trim();
-    setChatInput('');
-    setIsChatLoading(true);
-
-    // Add user message to chat
-    const newMessages: ChatMessage[] = [
-      ...chatMessages,
-      { role: 'user', content: userMessage }
-    ];
-    setChatMessages(newMessages);
-
-    try {
-      // Build conversation context
-      const conversationContext = newMessages
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n\n');
-
-      const tweakPrompt = `Here is our conversation so far:
-
-${conversationContext}
-
-The user wants to modify the output. Their latest request is:
-"${userMessage}"
-
-Please provide an updated version of the content based on their feedback. Maintain the same format (${activeSkill?.outputFormat.toUpperCase()}).`;
-
-      let newContent = '';
-      lastPreviewUpdateRef.current = 0;
-
-      await streamResponse(
-        activeSkill?.systemPrompt || '',
-        tweakPrompt,
-        [],
-        (content) => {
-          newContent = content;
-          setOutput({ content, format: activeSkill?.outputFormat || 'text' });
-          // Debounce preview updates for HTML
-          if (activeSkill?.outputFormat === 'html') {
-            updatePreview(content, false);
-          }
-        }
-      );
-
-      // Force final preview update
-      if (activeSkill?.outputFormat === 'html') {
-        updatePreview(newContent, true);
-      }
-
-      // Add assistant response to chat
-      setChatMessages([
-        ...newMessages,
-        { role: 'assistant', content: newContent }
-      ]);
-
-    } catch (err: any) {
-      setChatMessages([
-        ...newMessages,
-        { role: 'assistant', content: `Error: ${err.message}` }
-      ]);
-    }
-
-    setIsChatLoading(false);
-  };
-
-  const handleChatKeyDown = (e: React.KeyboardEvent) => {
+  // Handle keyboard shortcuts
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendChatMessage();
+      sendMessage();
     }
   };
 
+  // Copy output
   const copyOutput = () => {
-    if (output) {
-      navigator.clipboard.writeText(output.content);
+    if (currentOutput) {
+      navigator.clipboard.writeText(currentOutput.content);
     }
   };
 
+  // Download output
   const downloadOutput = () => {
-    if (!output || !activeSkill) return;
-
-    const ext = output.format === 'html' ? 'html' : 'md';
-    const mimeType = output.format === 'html' ? 'text/html' : 'text/markdown';
-    const blob = new Blob([output.content], { type: mimeType });
+    if (!currentOutput) return;
+    const ext = currentOutput.format === 'html' ? 'html' : 'md';
+    const mimeType = currentOutput.format === 'html' ? 'text/html' : 'text/markdown';
+    const blob = new Blob([currentOutput.content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${activeSkill.id}-${Date.now()}.${ext}`;
+    a.download = `output-${Date.now()}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const selectSkill = (skill: Skill) => {
-    setActiveSkill(skill);
-    setOutput(null);
-    setPreviewContent('');
-    setCustomExpanded(false);
-    setCustomInstructions(formData[skill.id]?.customInstructions || '');
-    setUploadedFiles([]);
-    setUrlContent('');
-    setUrlImages([]);
-    setChatMessages([]);
-    setChatInput('');
-  };
-
+  // Render markdown simply
   const renderMarkdown = (text: string) => {
     return text
       .replace(/^### (.*)$/gm, '<h3>$1</h3>')
       .replace(/^## (.*)$/gm, '<h2>$1</h2>')
       .replace(/^# (.*)$/gm, '<h1>$1</h1>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/^- (.*)$/gm, '<li>$1</li>')
       .replace(/^\d+\. (.*)$/gm, '<li>$1</li>')
       .replace(/^---$/gm, '<hr>')
-      .replace(/\n\n/g, '</p><p>');
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
   };
 
+  // Format file size
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  // Suggestion chips for empty state
+  const suggestions = [
+    { text: 'Create a newsletter about AI in Healthcare', icon: '📰' },
+    { text: 'Research trends in Digital India initiatives', icon: '🔍' },
+    { text: 'Write a speaker invitation for tech summit', icon: '✉️' },
+    { text: 'Generate daily news briefing for BFSI sector', icon: '☀️' },
+  ];
+
   return (
-    <div className={styles.layout}>
-      {/* Sidebar */}
-      <aside className={styles.sidebar}>
-        <div className={styles.sidebarHeader}>
-          <div className={styles.logo}>
-            <div className={styles.logoIcon}>S</div>
-            <span className={styles.logoText}>Skills Hub</span>
+    <div className={styles.chatLayout}>
+      {/* Header */}
+      <header className={styles.chatHeader}>
+        <div className={styles.chatHeaderLeft}>
+          <div className={styles.chatLogo}>
+            <span className={styles.chatLogoIcon}>S</span>
+            <span className={styles.chatLogoText}>Skills Hub</span>
           </div>
         </div>
-
-        <nav className={styles.sidebarNav}>
-          <div className={styles.navSection}>
-            <div className={styles.navSectionTitle}>Content Generation</div>
-            {skills.map((skill) => (
-              <button
-                key={skill.id}
-                className={`${styles.navItem} ${activeSkill?.id === skill.id ? styles.active : ''}`}
-                onClick={() => selectSkill(skill)}
-              >
-                <span className={styles.navIcon}>{skill.icon}</span>
-                <span className={styles.navLabel}>{skill.name}</span>
-                <span className={styles.navBadge}>{skill.outputFormat.toUpperCase()}</span>
-              </button>
-            ))}
-          </div>
-        </nav>
-
-        <div className={styles.sidebarFooter}>
-          <a href="/admin" className={styles.adminLink}>
-            📊 Admin Dashboard
+        <div className={styles.chatHeaderRight}>
+          <a href="/admin" className={styles.headerLink}>
+            Admin
           </a>
-          <button className={styles.themeToggle} onClick={toggleTheme}>
-            {theme === 'light' ? '🌙' : '☀️'} {theme === 'light' ? 'Dark' : 'Light'} Mode
+          <button className={styles.themeBtn} onClick={toggleTheme}>
+            {theme === 'light' ? '🌙' : '☀️'}
           </button>
         </div>
-      </aside>
+      </header>
 
       {/* Main Content */}
-      <main className={styles.main}>
-        {/* Header */}
-        <header className={styles.header}>
-          <div className={styles.headerTitle}>
-            <span className={styles.headerBreadcrumb}>Skills /</span>
-            <span>{activeSkill?.name}</span>
-          </div>
-          <div className={styles.headerSpacer} />
-        </header>
-
-        {/* Content */}
-        <div className={styles.content}>
-          {/* Form Panel */}
-          <div className={styles.formPanel}>
-            <div className={styles.formHeader}>
-              <h2 className={styles.formTitle}>{activeSkill?.name}</h2>
-              <p className={styles.formSubtitle}>{activeSkill?.description}</p>
-            </div>
-
-            <div className={styles.formBody}>
-              {/* File Upload Section */}
-              <div className={styles.formSection}>
-                <div className={styles.formSectionTitle}>Context Files</div>
-                <div className={styles.fileUpload}>
-                  <div
-                    className={`${styles.dropZone} ${isDragOver ? styles.dragOver : ''}`}
-                    onDrop={handleDrop}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <div className={styles.dropZoneIcon}>📎</div>
-                    <div className={styles.dropZoneText}>
-                      Drop files here or click to upload
-                    </div>
-                    <div className={styles.dropZoneHint}>
-                      Images (PNG, JPG, WebP) or PDF files up to 20MB
-                    </div>
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*,.pdf"
-                    multiple
-                    style={{ display: 'none' }}
-                    onChange={(e) => handleFileSelect(e.target.files)}
-                  />
-
-                  {uploadedFiles.length > 0 && (
-                    <div className={styles.fileList}>
-                      {uploadedFiles.map((uploadedFile) => (
-                        <div key={uploadedFile.id} className={styles.fileItem}>
-                          <div className={styles.filePreview}>
-                            {uploadedFile.preview ? (
-                              <img src={uploadedFile.preview} alt={uploadedFile.file.name} />
-                            ) : (
-                              <span className={styles.filePreviewIcon}>📄</span>
-                            )}
-                          </div>
-                          <div className={styles.fileInfo}>
-                            <div className={styles.fileName}>{uploadedFile.file.name}</div>
-                            <div className={styles.fileSize}>
-                              {formatFileSize(uploadedFile.file.size)}
-                            </div>
-                          </div>
-                          <button
-                            className={styles.fileRemove}
-                            onClick={() => removeFile(uploadedFile.id)}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+      <div className={styles.chatMain}>
+        {/* Chat Panel */}
+        <div className={`${styles.chatPanel} ${showPreview ? styles.withPreview : ''}`}>
+          <div className={styles.messagesContainer}>
+            {messages.length === 0 ? (
+              <div className={styles.emptyState}>
+                <div className={styles.emptyIcon}>✨</div>
+                <h2 className={styles.emptyTitle}>What would you like to create?</h2>
+                <p className={styles.emptySubtitle}>
+                  I can help you create newsletters, research reports, speaker invitations, and more.
+                  Just describe what you need or paste a URL for reference.
+                </p>
+                <div className={styles.suggestionGrid}>
+                  {suggestions.map((suggestion, idx) => (
+                    <button
+                      key={idx}
+                      className={styles.suggestionCard}
+                      onClick={() => setInputValue(suggestion.text)}
+                    >
+                      <span className={styles.suggestionIcon}>{suggestion.icon}</span>
+                      <span className={styles.suggestionText}>{suggestion.text}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
-
-              {/* Form Fields */}
-              <div className={styles.formSection}>
-                <div className={styles.formSectionTitle}>Parameters</div>
-                {activeSkill?.fields.map((field) => (
-                  <div key={field.name} className={styles.field}>
-                    <label className={styles.label}>
-                      {field.label}
-                      {field.required && <span className={styles.required}>*</span>}
-                      {field.name === 'sourceUrl' && isFetchingUrl && (
-                        <span className={styles.fetchingBadge}>Fetching content...</span>
+            ) : (
+              <div className={styles.messagesList}>
+                {messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`${styles.message} ${styles[message.role]}`}
+                  >
+                    <div className={styles.messageAvatar}>
+                      {message.role === 'user' ? '👤' : '✨'}
+                    </div>
+                    <div className={styles.messageContent}>
+                      {message.role === 'user' ? (
+                        <>
+                          <p className={styles.messageText}>{message.content}</p>
+                          {message.files && message.files.length > 0 && (
+                            <div className={styles.messageFiles}>
+                              {message.files.map((file) => (
+                                <div key={file.id} className={styles.messageFile}>
+                                  {file.preview ? (
+                                    <img src={file.preview} alt={file.name} />
+                                  ) : (
+                                    <span>📄</span>
+                                  )}
+                                  <span>{file.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {message.skillUsed && (
+                            <div className={styles.skillBadge}>
+                              Using: {message.skillUsed}
+                            </div>
+                          )}
+                          <div className={styles.assistantContent}>
+                            {message.outputFormat === 'html' ? (
+                              <div className={styles.htmlPreviewMini}>
+                                <div className={styles.htmlPreviewLabel}>
+                                  HTML Output Generated
+                                  {message.isStreaming && <span className={styles.streamingDot} />}
+                                </div>
+                                <p>View the preview panel on the right to see the rendered output.</p>
+                              </div>
+                            ) : (
+                              <div
+                                className={styles.markdownContent}
+                                dangerouslySetInnerHTML={{
+                                  __html: renderMarkdown(message.content),
+                                }}
+                              />
+                            )}
+                          </div>
+                        </>
                       )}
-                      {field.name === 'sourceUrl' && urlContent && !isFetchingUrl && (
-                        <span className={styles.successBadge}>
-                          ✓ {Math.round(urlContent.length / 1000)}k chars{urlImages.length > 0 ? ` + ${urlImages.length} img` : ''}
-                        </span>
-                      )}
-                    </label>
+                    </div>
+                  </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
 
-                    {field.type === 'select' ? (
-                      <select
-                        className={styles.select}
-                        value={formData[activeSkill.id]?.[field.name] || ''}
-                        onChange={(e) =>
-                          updateField(activeSkill.id, field.name, e.target.value)
-                        }
-                      >
-                        <option value="">Select...</option>
-                        {field.options?.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
-                    ) : field.type === 'textarea' ? (
-                      <textarea
-                        className={styles.textarea}
-                        placeholder={field.placeholder}
-                        value={formData[activeSkill.id]?.[field.name] || ''}
-                        onChange={(e) =>
-                          updateField(activeSkill.id, field.name, e.target.value)
-                        }
-                      />
-                    ) : field.type === 'multiselect' ? (
-                      <div className={styles.multiSelect}>
-                        {field.options?.map((opt) => {
-                          const selected = (
-                            formData[activeSkill.id]?.[field.name] || []
-                          ).includes(opt);
-                          return (
-                            <button
-                              key={opt}
-                              type="button"
-                              className={`${styles.multiOption} ${selected ? styles.selected : ''}`}
-                              onClick={() =>
-                                toggleMulti(activeSkill.id, field.name, opt)
-                              }
-                            >
-                              {selected ? '✓ ' : ''}
-                              {opt}
-                            </button>
-                          );
-                        })}
-                      </div>
+          {/* Input Area */}
+          <div
+            className={`${styles.inputContainer} ${isDragOver ? styles.dragOver : ''}`}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+          >
+            {/* Attached Files Preview */}
+            {attachedFiles.length > 0 && (
+              <div className={styles.attachedFiles}>
+                {attachedFiles.map((file) => (
+                  <div key={file.id} className={styles.attachedFile}>
+                    {file.preview ? (
+                      <img src={file.preview} alt={file.name} />
                     ) : (
-                      <input
-                        type={field.type}
-                        className={styles.input}
-                        placeholder={field.placeholder}
-                        value={formData[activeSkill.id]?.[field.name] || ''}
-                        onChange={(e) =>
-                          updateField(activeSkill.id, field.name, e.target.value)
-                        }
-                      />
+                      <span className={styles.fileIcon}>📄</span>
                     )}
+                    <span className={styles.fileName}>{file.name}</span>
+                    <button
+                      className={styles.removeFile}
+                      onClick={() => removeFile(file.id)}
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
               </div>
+            )}
 
-              {/* Custom Instructions */}
-              <div className={styles.customSection}>
-                <div
-                  className={styles.customToggle}
-                  onClick={() => setCustomExpanded(!customExpanded)}
-                >
-                  <div className={styles.customToggleLeft}>
-                    <div className={styles.customToggleIcon}>✨</div>
-                    <div>
-                      <div className={styles.customToggleText}>Custom Instructions</div>
-                      <div className={styles.customToggleHint}>
-                        Add specific requirements
-                      </div>
-                    </div>
-                  </div>
-                  <button className={styles.customToggleBtn}>
-                    {customExpanded ? 'Hide' : 'Add'}
-                  </button>
-                </div>
-
-                {customExpanded && (
-                  <div className={styles.customContent}>
-                    <textarea
-                      className={styles.textarea}
-                      placeholder="Add any specific instructions, requirements, or context..."
-                      value={customInstructions}
-                      onChange={(e) => setCustomInstructions(e.target.value)}
-                      style={{ minHeight: '100px' }}
-                    />
-                    <div className={styles.suggestions}>
-                      {activeSkill?.customSuggestions.map((s) => (
-                        <button
-                          key={s}
-                          className={styles.suggestionChip}
-                          onClick={() => addSuggestion(s)}
-                        >
-                          + {s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+            {/* URL Fetching Indicator */}
+            {fetchingUrls.size > 0 && (
+              <div className={styles.fetchingIndicator}>
+                <div className={styles.spinner} />
+                <span>Fetching content from URL...</span>
               </div>
-            </div>
+            )}
 
-            {/* Form Actions */}
-            <div className={styles.formActions}>
+            <div className={styles.inputWrapper}>
               <button
-                className={styles.generateBtn}
-                onClick={generate}
-                disabled={isLoading}
+                className={styles.attachBtn}
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach files"
               >
-                {isLoading ? (
-                  <>
-                    <div className={styles.spinner} />
-                    Generating...
-                  </>
-                ) : (
-                  'Generate Content'
-                )}
+                📎
+              </button>
+              <textarea
+                ref={textareaRef}
+                className={styles.chatInput}
+                placeholder="Describe what you want to create, or paste a URL..."
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isLoading}
+                rows={1}
+              />
+              <button
+                className={styles.sendBtn}
+                onClick={sendMessage}
+                disabled={isLoading || (!inputValue.trim() && attachedFiles.length === 0)}
+              >
+                {isLoading ? <div className={styles.spinnerSmall} /> : '→'}
               </button>
             </div>
-          </div>
-
-          {/* Output Panel */}
-          <div className={styles.outputPanel}>
-            <div className={styles.outputHeader}>
-              <span className={styles.outputTitle}>Output</span>
-
-              {output && output.format === 'html' && (
-                <div className={styles.viewToggle}>
-                  <button
-                    className={`${styles.viewBtn} ${currentView === 'preview' ? styles.active : ''}`}
-                    onClick={() => setCurrentView('preview')}
-                  >
-                    Preview
-                  </button>
-                  <button
-                    className={`${styles.viewBtn} ${currentView === 'code' ? styles.active : ''}`}
-                    onClick={() => setCurrentView('code')}
-                  >
-                    Code
-                  </button>
-                </div>
-              )}
-
-              {output && (
-                <div className={styles.outputActions}>
-                  <button className={styles.actionBtn} onClick={copyOutput}>
-                    Copy
-                  </button>
-                  <button
-                    className={`${styles.actionBtn} ${styles.primary}`}
-                    onClick={downloadOutput}
-                  >
-                    Download
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className={styles.outputContent}>
-              {output ? (
-                <>
-                  <div className={styles.outputPreview}>
-                    {output.format === 'html' && currentView === 'preview' ? (
-                      <div className={styles.previewFrame}>
-                        {isLoading && (
-                          <div className={styles.previewLoading}>
-                            <div className={styles.spinner} />
-                            <span>Generating preview...</span>
-                          </div>
-                        )}
-                        <iframe
-                          srcDoc={previewContent || output.content}
-                          title="Preview"
-                          style={{ opacity: isLoading && !previewContent ? 0.5 : 1 }}
-                        />
-                      </div>
-                    ) : output.format === 'markdown' ? (
-                      <div
-                        className={styles.markdownView}
-                        dangerouslySetInnerHTML={{
-                          __html: renderMarkdown(output.content),
-                        }}
-                      />
-                    ) : (
-                      <pre className={styles.codeView}>{output.content}</pre>
-                    )}
-                  </div>
-
-                  {/* Chat Interface for Tweaks */}
-                  {output.content && !isLoading && (
-                    <div className={styles.chatSection}>
-                      <div className={styles.chatHeader}>
-                        <span>💬 Refine Output</span>
-                        <span className={styles.chatHint}>Ask for changes or adjustments</span>
-                      </div>
-
-                      {chatMessages.length > 1 && (
-                        <div className={styles.chatHistory}>
-                          {chatMessages.slice(1).map((msg, idx) => (
-                            <div
-                              key={idx}
-                              className={`${styles.chatMessage} ${styles[msg.role]}`}
-                            >
-                              <div className={styles.chatRole}>
-                                {msg.role === 'user' ? 'You' : 'AI'}
-                              </div>
-                              <div className={styles.chatContent}>
-                                {msg.role === 'user' ? msg.content : 'Updated the output above ↑'}
-                              </div>
-                            </div>
-                          ))}
-                          <div ref={chatEndRef} />
-                        </div>
-                      )}
-
-                      <div className={styles.chatInput}>
-                        <input
-                          type="text"
-                          placeholder="e.g., Make it shorter, add more stats, change the tone..."
-                          value={chatInput}
-                          onChange={(e) => setChatInput(e.target.value)}
-                          onKeyDown={handleChatKeyDown}
-                          disabled={isChatLoading}
-                          className={styles.input}
-                        />
-                        <button
-                          className={styles.chatSendBtn}
-                          onClick={sendChatMessage}
-                          disabled={isChatLoading || !chatInput.trim()}
-                        >
-                          {isChatLoading ? (
-                            <div className={styles.spinnerSmall} />
-                          ) : (
-                            '→'
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className={styles.outputEmpty}>
-                  <div className={styles.outputEmptyIcon}>✨</div>
-                  <div className={styles.outputEmptyText}>
-                    Ready to generate content
-                  </div>
-                  <div className={styles.outputEmptyHint}>
-                    Fill in the parameters and click &quot;Generate Content&quot;
-                  </div>
-                </div>
-              )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,.pdf"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => handleFileSelect(e.target.files)}
+            />
+            <div className={styles.inputHint}>
+              Press Enter to send, Shift+Enter for new line. Drop files or paste URLs.
             </div>
           </div>
         </div>
-      </main>
+
+        {/* Preview Panel */}
+        {showPreview && currentOutput && (
+          <div className={styles.previewPanel}>
+            <div className={styles.previewHeader}>
+              <div className={styles.previewTabs}>
+                <button
+                  className={`${styles.previewTab} ${previewTab === 'preview' ? styles.active : ''}`}
+                  onClick={() => setPreviewTab('preview')}
+                >
+                  Preview
+                </button>
+                <button
+                  className={`${styles.previewTab} ${previewTab === 'code' ? styles.active : ''}`}
+                  onClick={() => setPreviewTab('code')}
+                >
+                  Code
+                </button>
+              </div>
+              <div className={styles.previewActions}>
+                <button className={styles.previewAction} onClick={copyOutput}>
+                  Copy
+                </button>
+                <button className={styles.previewAction} onClick={downloadOutput}>
+                  Download
+                </button>
+                <button
+                  className={styles.previewClose}
+                  onClick={() => setShowPreview(false)}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div className={styles.previewBody}>
+              {previewTab === 'preview' ? (
+                currentOutput.format === 'html' ? (
+                  <iframe
+                    className={styles.previewIframe}
+                    srcDoc={previewContent || currentOutput.content}
+                    title="Preview"
+                  />
+                ) : (
+                  <div
+                    className={styles.previewMarkdown}
+                    dangerouslySetInnerHTML={{
+                      __html: renderMarkdown(currentOutput.content),
+                    }}
+                  />
+                )
+              ) : (
+                <pre className={styles.previewCode}>
+                  {currentOutput.content}
+                </pre>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
