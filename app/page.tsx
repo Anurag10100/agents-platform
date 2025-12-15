@@ -379,17 +379,32 @@ export default function Home() {
 
       // Add URL content if available
       let urlContext = '';
+      // Limit to 3 images for embedding
+      const imagesToEmbed = urlImages.slice(0, 3);
       if (urlContent) {
         let imageInfo = '';
-        if (urlImages.length > 0) {
-          imageInfo = `\n\n## IMAGES FROM THIS WEBSITE (embed these in your HTML output):\n`;
-          urlImages.forEach((img, idx) => {
-            imageInfo += `${idx + 1}. URL: ${img.url}${img.alt ? ` | Alt: "${img.alt}"` : ''}\n`;
+        if (imagesToEmbed.length > 0) {
+          imageInfo = `\n\n## WEBSITE IMAGES:\n`;
+          imageInfo += `${imagesToEmbed.length} image(s) are available from the website. Use these placeholder tags in your HTML output:\n`;
+          imagesToEmbed.forEach((img, idx) => {
+            imageInfo += `- {{IMAGE_${idx + 1}}}${img.alt ? ` - ${img.alt}` : ''}\n`;
           });
-          imageInfo += `\n**IMPORTANT:** Include these images in your HTML output using <img src="URL" alt="description" /> tags. The images are provided above for visual reference.`;
+          imageInfo += `\nIMPORTANT: Place {{IMAGE_1}}, {{IMAGE_2}}, etc. where you want images to appear. They will be automatically replaced with actual images. Use them like: <div>{{IMAGE_1}}</div>`;
         }
-        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}${imageInfo}\n\n---\n\nUse the above website content as the primary source. Include the website images in your HTML output using the URLs provided.`;
+        urlContext = `\n\n## WEBSITE CONTENT FROM ${data.sourceUrl}:\n\n${urlContent}${imageInfo}\n\n---\n\nGenerate the output using this website content.${imagesToEmbed.length > 0 ? ' Include the image placeholders ({{IMAGE_1}}, {{IMAGE_2}}, etc.) in appropriate places in your HTML.' : ''}`;
       }
+
+      // Function to replace image placeholders with actual base64 data URLs
+      const replaceImagePlaceholders = (html: string): string => {
+        let result = html;
+        imagesToEmbed.forEach((img, idx) => {
+          const placeholder = `{{IMAGE_${idx + 1}}}`;
+          const dataUrl = `data:${img.mediaType};base64,${img.base64}`;
+          const imgTag = `<img src="${dataUrl}" alt="${img.alt || 'Image from source'}" style="max-width:100%;height:auto;display:block;margin:16px auto;border-radius:8px;" />`;
+          result = result.split(placeholder).join(imgTag);
+        });
+        return result;
+      };
 
       const userPrompt = activeSkill.buildPrompt(data, customInstructions.trim()) + fileContext + urlContext;
 
@@ -398,25 +413,33 @@ export default function Home() {
 
       const startTime = Date.now();
 
-      const finalContent = await streamResponse(
+      const rawContent = await streamResponse(
         activeSkill.systemPrompt,
         userPrompt,
         imageContents,
         (content) => {
-          setOutput({ content, format: activeSkill.outputFormat });
+          // Replace image placeholders in real-time during streaming
+          const processedContent = imagesToEmbed.length > 0 ? replaceImagePlaceholders(content) : content;
+          setOutput({ content: processedContent, format: activeSkill.outputFormat });
           // Debounce preview updates for HTML to avoid iframe flickering
           if (activeSkill.outputFormat === 'html') {
-            updatePreview(content, false);
+            updatePreview(processedContent, false);
           }
         }
       );
 
       const durationMs = Date.now() - startTime;
 
+      // Process final content with image placeholders replaced
+      const finalContent = imagesToEmbed.length > 0 ? replaceImagePlaceholders(rawContent) : rawContent;
+
       // Force final preview update with complete content
       if (activeSkill.outputFormat === 'html') {
         updatePreview(finalContent, true);
       }
+
+      // Update output with final processed content
+      setOutput({ content: finalContent, format: activeSkill.outputFormat });
 
       // Store initial generation in chat history
       setChatMessages([
