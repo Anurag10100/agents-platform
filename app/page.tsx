@@ -2,6 +2,8 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { skills, Skill } from './skills-data';
+import { UserPreferences } from '../lib/database.types';
+import { buildPreferencesContext } from '../lib/preferences';
 import styles from './page.module.css';
 
 interface UploadedFile {
@@ -120,11 +122,28 @@ export default function Home() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [fetchingUrls, setFetchingUrls] = useState<Set<string>>(new Set());
   const [fetchedUrls, setFetchedUrls] = useState<Map<string, FetchedUrl>>(new Map());
+  const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Load user preferences on mount
+  useEffect(() => {
+    const loadPreferences = async () => {
+      try {
+        const response = await fetch('/api/preferences');
+        const result = await response.json();
+        if (result.success && result.data) {
+          setUserPreferences(result.data);
+        }
+      } catch (error) {
+        console.error('Failed to load preferences:', error);
+      }
+    };
+    loadPreferences();
+  }, []);
 
   // Auto-scroll to bottom of messages
   useEffect(() => {
@@ -341,20 +360,26 @@ export default function Home() {
 
     // Fetch URLs if any
     let fetchedUrlData: FetchedUrl[] = [];
+    let failedUrls: string[] = [];
     if (urlsToFetch.length > 0) {
       setFetchingUrls(new Set(urlsToFetch));
 
       const fetchPromises = urlsToFetch.map(async (url) => {
         const data = await fetchUrlContent(url);
-        if (data) {
+        if (data && data.content && data.content.trim().length > 100) {
           setFetchedUrls((prev) => new Map(prev).set(url, data));
-          return data;
+          return { success: true, data, url };
         }
-        return null;
+        return { success: false, data: null, url };
       });
 
       const results = await Promise.all(fetchPromises);
-      fetchedUrlData = results.filter((r): r is FetchedUrl => r !== null);
+      fetchedUrlData = results
+        .filter((r) => r.success && r.data)
+        .map((r) => r.data as FetchedUrl);
+      failedUrls = results
+        .filter((r) => !r.success)
+        .map((r) => r.url);
       setFetchingUrls(new Set());
     }
 
@@ -366,12 +391,27 @@ export default function Home() {
       }
     }
 
+    // Show system message if URLs failed to fetch
+    if (failedUrls.length > 0 && fetchedUrlData.length === 0) {
+      const systemMsgId = `msg-${Date.now()}-system`;
+      const systemMessage: Message = {
+        id: systemMsgId,
+        role: 'system',
+        content: `Could not fetch content from: ${failedUrls.join(', ')}. The website may be blocking automated access or require authentication.`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, systemMessage]);
+    }
+
     // Detect skill to use
     const detectedSkill = detectSkill(userMessage);
     const skill = detectedSkill || skills[0];
 
     // Build prompt
     let fullPrompt = userMessage;
+
+    // Get preferences context
+    const preferencesContext = buildPreferencesContext(userPreferences);
 
     // Add URL content with strong emphasis to use it
     if (fetchedUrlData.length > 0) {
@@ -415,6 +455,28 @@ ${urlContext}
 ---
 
 Generate the output using ONLY the real content from the website above. Use the {{IMAGE_X_Y}} placeholders for images - they will be automatically replaced with actual images from the source website.`;
+    } else if (failedUrls.length > 0) {
+      // URLs were detected but couldn't be fetched
+      fullPrompt = `## URL ACCESS NOTICE:
+The user mentioned the following URL(s) but the content could not be retrieved:
+${failedUrls.map(u => `- ${u}`).join('\n')}
+
+This may be because the website is blocking automated access, requires authentication, or is temporarily unavailable.
+
+## USER REQUEST:
+${userMessage}
+
+---
+
+Since you cannot access the URL content directly, please:
+1. Ask the user if they can provide the specific information they want to use (e.g., speaker names, event details, etc.)
+2. Or offer to create a template that they can fill in with the actual content
+3. Do NOT make up fake content - be transparent that you need the actual information`;
+    }
+
+    // Inject user preferences into prompt
+    if (preferencesContext) {
+      fullPrompt = `${preferencesContext}\n${fullPrompt}`;
     }
 
     // Prepare images for API
@@ -633,6 +695,9 @@ Generate the output using ONLY the real content from the website above. Use the 
           </div>
         </div>
         <div className={styles.chatHeaderRight}>
+          <a href="/settings" className={styles.headerLink}>
+            Settings
+          </a>
           <a href="/admin" className={styles.headerLink}>
             Admin
           </a>
@@ -676,10 +741,12 @@ Generate the output using ONLY the real content from the website above. Use the 
                     className={`${styles.message} ${styles[message.role]}`}
                   >
                     <div className={styles.messageAvatar}>
-                      {message.role === 'user' ? '👤' : '✨'}
+                      {message.role === 'user' ? '👤' : message.role === 'system' ? '⚠️' : '✨'}
                     </div>
                     <div className={styles.messageContent}>
-                      {message.role === 'user' ? (
+                      {message.role === 'system' ? (
+                        <p className={styles.systemMessage}>{message.content}</p>
+                      ) : message.role === 'user' ? (
                         <>
                           <p className={styles.messageText}>{message.content}</p>
                           {message.files && message.files.length > 0 && (
