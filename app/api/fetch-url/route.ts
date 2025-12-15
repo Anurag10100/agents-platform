@@ -147,6 +147,16 @@ function extractImageUrls(html: string, baseUrl: URL): ExtractedImage[] {
     }
   }
 
+  // Also try twitter:image
+  const twitterImage = html.match(/<meta[^>]*(?:name|property)=["']twitter:image["'][^>]*content=["']([^"']+)["']/i);
+  if (twitterImage) {
+    const imgUrl = resolveUrl(twitterImage[1], baseUrl);
+    if (imgUrl && !seen.has(imgUrl)) {
+      seen.add(imgUrl);
+      images.push({ url: imgUrl, alt: 'Featured image' });
+    }
+  }
+
   // Extract images from img tags
   const imgPattern = /<img[^>]*>/gi;
   let match;
@@ -154,16 +164,34 @@ function extractImageUrls(html: string, baseUrl: URL): ExtractedImage[] {
   while ((match = imgPattern.exec(html)) !== null) {
     const imgTag = match[0];
 
-    // Get src (try srcset first for higher quality, then src)
+    // Get src - try multiple attributes for lazy-loaded images
     let src = '';
-    const srcsetMatch = imgTag.match(/srcset=["']([^"']+)["']/i);
-    if (srcsetMatch) {
-      // Get the largest image from srcset
-      const srcset = srcsetMatch[1];
-      const sources = srcset.split(',').map(s => s.trim().split(/\s+/)[0]);
-      src = sources[sources.length - 1] || sources[0];
+
+    // Try data-src first (lazy loading)
+    const dataSrcMatch = imgTag.match(/data-src=["']([^"']+)["']/i);
+    if (dataSrcMatch) {
+      src = dataSrcMatch[1];
     }
 
+    // Try data-lazy-src
+    if (!src) {
+      const dataLazySrcMatch = imgTag.match(/data-lazy-src=["']([^"']+)["']/i);
+      if (dataLazySrcMatch) {
+        src = dataLazySrcMatch[1];
+      }
+    }
+
+    // Try srcset for higher quality
+    if (!src) {
+      const srcsetMatch = imgTag.match(/srcset=["']([^"']+)["']/i);
+      if (srcsetMatch) {
+        const srcset = srcsetMatch[1];
+        const sources = srcset.split(',').map(s => s.trim().split(/\s+/)[0]);
+        src = sources[sources.length - 1] || sources[0];
+      }
+    }
+
+    // Finally try regular src
     if (!src) {
       const srcMatch = imgTag.match(/src=["']([^"']+)["']/i);
       if (srcMatch) {
@@ -252,11 +280,11 @@ async function fetchImagesAsBase64(images: ExtractedImage[], baseUrl: URL): Prom
 
       const buffer = await response.arrayBuffer();
 
-      // Skip tiny images (likely icons/pixels) - less than 5KB
-      if (buffer.byteLength < 5000) return null;
+      // Skip tiny images (likely icons/pixels) - less than 2KB
+      if (buffer.byteLength < 2000) return null;
 
-      // Skip very large images - more than 5MB
-      if (buffer.byteLength > 5 * 1024 * 1024) return null;
+      // Skip very large images - more than 4MB
+      if (buffer.byteLength > 4 * 1024 * 1024) return null;
 
       const base64 = Buffer.from(buffer).toString('base64');
 
