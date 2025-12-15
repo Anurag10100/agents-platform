@@ -381,20 +381,30 @@ export default function Home() {
         // Add image placeholders
         const imagesToEmbed = urlData.images.slice(0, 3);
         if (imagesToEmbed.length > 0) {
-          context += `\n\n### Available Images from this source:\n`;
+          context += `\n\n### ACTUAL IMAGES FROM THIS SOURCE (USE THESE, NOT picsum.photos):\n`;
           imagesToEmbed.forEach((img, imgIdx) => {
-            context += `- {{IMAGE_${idx + 1}_${imgIdx + 1}}}${img.alt ? ` - ${img.alt}` : ''}\n`;
+            context += `- {{IMAGE_${idx + 1}_${imgIdx + 1}}} - "${img.alt || 'Image from ' + urlData.title}"\n`;
           });
-          context += `\nInclude these image placeholders in your HTML output.`;
         }
 
         return context;
       }).join('\n\n---\n');
 
-      fullPrompt = `## IMPORTANT INSTRUCTIONS:
+      // Count total images available
+      const totalImages = fetchedUrlData.reduce((acc, u) => acc + Math.min(u.images.length, 3), 0);
+
+      fullPrompt = `## CRITICAL IMAGE INSTRUCTIONS:
+${totalImages > 0 ? `You have ${totalImages} REAL image(s) from the source website. Use the {{IMAGE_X_Y}} placeholders provided below.
+DO NOT use picsum.photos or any placeholder image URLs.
+DO NOT use https://picsum.photos/seed/... URLs.
+ONLY use the {{IMAGE_X_Y}} placeholders which will be replaced with actual images from the website.
+
+For the hero image, use: {{IMAGE_1_1}}
+For the image grid, use: {{IMAGE_1_1}}, {{IMAGE_1_2}}, {{IMAGE_1_3}} etc.` : 'No images available from source, you may use picsum.photos as fallback.'}
+
+## CONTENT INSTRUCTIONS:
 You MUST create content based on the ACTUAL website content provided below. Do NOT make up generic content.
 Extract real headlines, stories, statistics, quotes, and information from the source material.
-The output should reflect what is actually on the website, not placeholder or invented content.
 
 ## USER REQUEST:
 ${userMessage}
@@ -404,7 +414,7 @@ ${urlContext}
 
 ---
 
-Generate the output using ONLY the real content from the website above. Include actual headlines, real statistics, genuine quotes, and true information from the source. Do not invent or placeholder any content.`;
+Generate the output using ONLY the real content from the website above. Use the {{IMAGE_X_Y}} placeholders for images - they will be automatically replaced with actual images from the source website.`;
     }
 
     // Prepare images for API
