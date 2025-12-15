@@ -28,14 +28,20 @@ const enhanceHtmlImages = (html: string, urlImages: FetchedImage[]): string => {
   if (!html || !urlImages.length) return html;
   if (typeof window === 'undefined') return html;
 
-  const createKey = (url: string) => {
+  const normalizeForMatch = (url: string) => {
     try {
       const parsed = new URL(url, window.location.href);
-      const filename = parsed.pathname.split('/').filter(Boolean).pop() || parsed.pathname;
-      return `${parsed.hostname}/${filename}`.toLowerCase();
+      parsed.hash = '';
+      parsed.search = '';
+      return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
     } catch {
-      return url.replace(/[?#].*$/, '').split('/').pop()?.toLowerCase() || url;
+      return url.replace(/[?#].*$/, '');
     }
+  };
+
+  const getFilename = (url: string) => {
+    const cleaned = normalizeForMatch(url);
+    return cleaned.split('/').filter(Boolean).pop()?.toLowerCase() || cleaned.toLowerCase();
   };
 
   try {
@@ -46,17 +52,33 @@ const enhanceHtmlImages = (html: string, urlImages: FetchedImage[]): string => {
       .filter((img) => img.base64 && img.mediaType)
       .map((img) => ({
         original: img.url,
-        key: createKey(img.url),
+        canonical: normalizeForMatch(img.url).toLowerCase(),
+        filename: getFilename(img.url),
         data: `data:${img.mediaType};base64,${img.base64}`,
       }));
 
+    const canonicalMap = new Map<string, string>();
+    const filenameMap = new Map<string, string[]>();
+
+    replacements.forEach((img) => {
+      canonicalMap.set(img.canonical, img.data);
+      const existing = filenameMap.get(img.filename) || [];
+      existing.push(img.data);
+      filenameMap.set(img.filename, existing);
+    });
+
     const getDataUri = (src: string) => {
-      const normalizedSrc = src.replace(/[?#].*$/, '');
-      const direct = replacements.find((img) => img.original === src || img.original === normalizedSrc);
+      const normalizedSrc = normalizeForMatch(src).toLowerCase();
+      const direct = replacements.find((img) => img.original === src || img.canonical === normalizedSrc);
       if (direct) return direct.data;
 
-      const keyMatch = replacements.find((img) => img.key === createKey(src));
-      return keyMatch?.data;
+      const filename = getFilename(src);
+      const candidates = filenameMap.get(filename);
+      if (candidates?.length === 1) {
+        return candidates[0];
+      }
+
+      return canonicalMap.get(normalizedSrc);
     };
 
     doc.querySelectorAll('img').forEach((img) => {
