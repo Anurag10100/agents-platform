@@ -1,4 +1,10 @@
 import { NextRequest } from 'next/server';
+import {
+  fetchUrlRequestSchema,
+  validateRequest,
+  checkRateLimit,
+  getClientIdentifier,
+} from '@/lib/security';
 
 interface ExtractedImage {
   url: string;
@@ -9,16 +15,40 @@ interface ExtractedImage {
 
 export async function POST(request: NextRequest) {
   try {
-    const { url, fetchImages = true } = await request.json();
+    // Rate limiting: 60 requests per minute per IP
+    const clientId = getClientIdentifier(request);
+    const rateLimit = checkRateLimit(`fetch-url:${clientId}`, 60, 60000);
 
-    if (!url) {
+    if (!rateLimit.allowed) {
       return new Response(
-        JSON.stringify({ error: 'URL is required' }),
+        JSON.stringify({
+          error: 'Rate limit exceeded. Please try again later.',
+          retryAfter: Math.ceil(rateLimit.resetIn / 1000),
+        }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': String(Math.ceil(rateLimit.resetIn / 1000)),
+          },
+        }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validation = validateRequest(fetchUrlRequestSchema, body);
+
+    if (!validation.success) {
+      return new Response(
+        JSON.stringify({ error: `Invalid request: ${validation.error}` }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    // Validate URL
+    const { url, fetchImages } = validation.data;
+
+    // Validate URL (already validated by schema, but double-check for safety)
     let validUrl: URL;
     try {
       validUrl = new URL(url);
@@ -124,10 +154,11 @@ export async function POST(request: NextRequest) {
       }),
       { headers: { 'Content-Type': 'application/json' } }
     );
-  } catch (error: any) {
+  } catch (error) {
     console.error('Fetch URL Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to fetch URL';
     return new Response(
-      JSON.stringify({ error: error.message || 'Failed to fetch URL' }),
+      JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

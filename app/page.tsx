@@ -5,6 +5,7 @@ import { skills, Skill } from './skills-data';
 import { UserPreferences } from '../lib/database.types';
 import { buildPreferencesContext } from '../lib/preferences';
 import { DataSource, DataFetchResult } from '../lib/data-sources/types';
+import { sanitizeHtml, escapeHtml, CSRF_HEADER_NAME, CSRF_HEADER_VALUE } from '../lib/security';
 import styles from './page.module.css';
 
 interface UploadedFile {
@@ -133,11 +134,24 @@ export default function Home() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Common headers for all API requests (including CSRF protection)
+  const getApiHeaders = (contentType = true) => {
+    const headers: Record<string, string> = {
+      [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE,
+    };
+    if (contentType) {
+      headers['Content-Type'] = 'application/json';
+    }
+    return headers;
+  };
+
   // Load user preferences and data sources on mount
   useEffect(() => {
     const loadPreferences = async () => {
       try {
-        const response = await fetch('/api/preferences');
+        const response = await fetch('/api/preferences', {
+          headers: { [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
+        });
         const result = await response.json();
         if (result.success && result.data) {
           setUserPreferences(result.data);
@@ -173,7 +187,7 @@ export default function Home() {
     try {
       const response = await fetch('/api/data-sources', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders(),
         body: JSON.stringify({
           action: 'fetch-multiple',
           sources: enabledSources,
@@ -221,7 +235,7 @@ export default function Home() {
     try {
       const response = await fetch('/api/fetch-url', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getApiHeaders(),
         body: JSON.stringify({ url, fetchImages: true }),
       });
 
@@ -332,7 +346,7 @@ export default function Home() {
   ): Promise<string> => {
     const response = await fetch('/api/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiHeaders(),
       body: JSON.stringify({
         systemPrompt,
         userPrompt,
@@ -595,14 +609,16 @@ Since you cannot access the URL content directly, please:
     setShowPreview(true);
     setCurrentOutput({ content: '', format: skill.outputFormat });
 
-    // Function to replace image placeholders
+    // Function to replace image placeholders (with XSS protection)
     const replaceImagePlaceholders = (html: string): string => {
       let result = html;
       fetchedUrlData.forEach((urlData, urlIdx) => {
         urlData.images.slice(0, 3).forEach((img, imgIdx) => {
           const placeholder = `{{IMAGE_${urlIdx + 1}_${imgIdx + 1}}}`;
           const dataUrl = `data:${img.mediaType};base64,${img.base64}`;
-          const imgTag = `<img src="${dataUrl}" alt="${img.alt || 'Image'}" style="max-width:100%;height:auto;display:block;margin:16px auto;border-radius:8px;" />`;
+          // Escape alt text to prevent XSS injection
+          const safeAlt = escapeHtml(img.alt || 'Image');
+          const imgTag = `<img src="${dataUrl}" alt="${safeAlt}" style="max-width:100%;height:auto;display:block;margin:16px auto;border-radius:8px;" />`;
           result = result.split(placeholder).join(imgTag);
         });
       });
@@ -656,7 +672,7 @@ Since you cannot access the URL content directly, please:
       try {
         await fetch('/api/admin/log-generation', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getApiHeaders(),
           body: JSON.stringify({
             skillId: skill.id,
             skillName: skill.name,
@@ -674,11 +690,12 @@ Since you cannot access the URL content directly, please:
         console.error('Failed to log generation:', e);
       }
 
-    } catch (error: any) {
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMsgId
-            ? { ...msg, content: `Error: ${error.message}`, isStreaming: false, outputFormat: 'text' }
+            ? { ...msg, content: `Error: ${errorMessage}`, isStreaming: false, outputFormat: 'text' }
             : msg
         )
       );
@@ -716,9 +733,9 @@ Since you cannot access the URL content directly, please:
     URL.revokeObjectURL(url);
   };
 
-  // Render markdown simply
+  // Render markdown with XSS protection
   const renderMarkdown = (text: string) => {
-    return text
+    const html = text
       .replace(/^### (.*)$/gm, '<h3>$1</h3>')
       .replace(/^## (.*)$/gm, '<h2>$1</h2>')
       .replace(/^# (.*)$/gm, '<h1>$1</h1>')
@@ -729,6 +746,8 @@ Since you cannot access the URL content directly, please:
       .replace(/^---$/gm, '<hr>')
       .replace(/\n\n/g, '</p><p>')
       .replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Sanitize HTML to prevent XSS attacks
+    return sanitizeHtml(html);
   };
 
   // Format file size

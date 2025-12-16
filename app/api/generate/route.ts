@@ -1,26 +1,71 @@
 import { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-
-// Initialize Anthropic client
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+import {
+  generateRequestSchema,
+  validateRequest,
+  checkRateLimit,
+  getClientIdentifier,
+} from '@/lib/security';
 
 // Valid media types for images
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
+// Initialize Anthropic client lazily to allow env validation
+let anthropic: Anthropic | null = null;
+
+function getAnthropicClient(): Anthropic {
+  if (!anthropic) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY is not configured');
+    }
+    anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+  }
+  return anthropic;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { systemPrompt, userPrompt, images } = await request.json();
+    // Rate limiting: 30 requests per minute per IP
+    const clientId = getClientIdentifier(request);
+    const rateLimit = checkRateLimit(`generate:${clientId}`, 30, 60000);
 
-    if (!systemPrompt || !userPrompt) {
+    if (!rateLimit.allowed) {
       return new Response(
-        JSON.stringify({ error: 'Missing required fields: systemPrompt and userPrompt' }),
+        JSON.stringify({
+          error: 'Rate limit exceeded. Please try again later.',
+          retryAfter: Math.ceil(rateLimit.resetIn / 1000),
+        }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': String(Math.ceil(rateLimit.resetIn / 1000)),
+            'X-RateLimit-Remaining': String(rateLimit.remaining),
+          },
+        }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validation = validateRequest(generateRequestSchema, body);
+
+    if (!validation.success) {
+      return new Response(
+        JSON.stringify({ error: `Invalid request: ${validation.error}` }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
+    const { systemPrompt, userPrompt, images } = validation.data;
+
+    // Get Anthropic client (validates API key)
+    let client: Anthropic;
+    try {
+      client = getAnthropicClient();
+    } catch (error) {
       return new Response(
         JSON.stringify({ error: 'ANTHROPIC_API_KEY is not configured' }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
@@ -59,7 +104,7 @@ export async function POST(request: NextRequest) {
     });
 
     // Use streaming for faster response
-    const stream = await anthropic.messages.stream({
+    const stream = await client.messages.stream({
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
       max_tokens: 8192,
       system: systemPrompt,
@@ -97,25 +142,31 @@ export async function POST(request: NextRequest) {
         'Connection': 'keep-alive',
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('API Error:', error);
 
-    if (error.status === 401) {
-      return new Response(
-        JSON.stringify({ error: 'Invalid API key' }),
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
+    // Handle Anthropic API errors
+    if (error && typeof error === 'object' && 'status' in error) {
+      const apiError = error as { status: number; message?: string };
+
+      if (apiError.status === 401) {
+        return new Response(
+          JSON.stringify({ error: 'Invalid API key' }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (apiError.status === 429) {
+        return new Response(
+          JSON.stringify({ error: 'API rate limit exceeded. Please try again later.' }),
+          { status: 429, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
-    if (error.status === 429) {
-      return new Response(
-        JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }),
-        { status: 429, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
+    const errorMessage = error instanceof Error ? error.message : 'An error occurred while generating content';
     return new Response(
-      JSON.stringify({ error: error.message || 'An error occurred while generating content' }),
+      JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

@@ -1,10 +1,30 @@
 import { NextRequest } from 'next/server';
 import { addLog } from '@/app/lib/generation-logs';
+import {
+  logGenerationRequestSchema,
+  validateRequest,
+  checkRateLimit,
+  getClientIdentifier,
+} from '@/lib/security';
 
 export async function POST(request: NextRequest) {
   try {
+    // Rate limiting: 100 requests per minute per IP
+    const clientId = getClientIdentifier(request);
+    const rateLimit = checkRateLimit(`log-generation:${clientId}`, 100, 60000);
+
+    if (!rateLimit.allowed) {
+      return new Response(
+        JSON.stringify({
+          error: 'Rate limit exceeded. Please try again later.',
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const body = await request.json();
 
+    // Note: Using loose validation here since logs come from internal calls
     const {
       skillId,
       skillName,
@@ -17,7 +37,7 @@ export async function POST(request: NextRequest) {
       urlImagesCount,
       durationMs,
       status,
-      error,
+      error: errorMessage,
     } = body;
 
     const log = addLog({
@@ -34,16 +54,17 @@ export async function POST(request: NextRequest) {
       urlImagesCount: urlImagesCount || 0,
       durationMs: durationMs || 0,
       status: status || 'success',
-      error,
+      error: errorMessage,
     });
 
     return new Response(JSON.stringify({ success: true, logId: log.id }), {
       headers: { 'Content-Type': 'application/json' },
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Log generation error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to log generation';
     return new Response(
-      JSON.stringify({ error: error.message || 'Failed to log generation' }),
+      JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

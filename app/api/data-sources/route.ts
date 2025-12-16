@@ -12,11 +12,42 @@ import { fetchFromGoogleSheets, fetchFromGoogleSheetsAPI, extractSpreadsheetId }
 import { fetchFromAirtable } from '@/lib/data-sources/airtable-connector';
 import { fetchFromSupabase } from '@/lib/data-sources/database-connector';
 import { fetchDataSource, fetchMultipleDataSources, dataResultsToMarkdown } from '@/lib/data-sources';
+import {
+  dataSourcesRequestSchema,
+  validateRequest,
+  checkRateLimit,
+  getClientIdentifier,
+} from '@/lib/security';
 
 export async function POST(request: NextRequest) {
   try {
+    // Rate limiting: 100 requests per minute per IP
+    const clientId = getClientIdentifier(request);
+    const rateLimit = checkRateLimit(`data-sources:${clientId}`, 100, 60000);
+
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Rate limit exceeded. Please try again later.',
+          retryAfter: Math.ceil(rateLimit.resetIn / 1000),
+        },
+        { status: 429 }
+      );
+    }
+
+    // Parse and validate request body
     const body = await request.json();
-    const { action, sources, source, options } = body;
+    const validation = validateRequest(dataSourcesRequestSchema, body);
+
+    if (!validation.success) {
+      return NextResponse.json(
+        { success: false, error: `Invalid request: ${validation.error}` },
+        { status: 400 }
+      );
+    }
+
+    const { action, sources, source, options } = validation.data;
 
     switch (action) {
       case 'fetch': {
@@ -234,7 +265,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: true,
           data: PREDEFINED_RSS_FEEDS,
-          categories: [...new Set(PREDEFINED_RSS_FEEDS.map(f => f.category))],
+          categories: Array.from(new Set(PREDEFINED_RSS_FEEDS.map(f => f.category))),
         });
       }
 
@@ -260,7 +291,7 @@ export async function GET() {
   return NextResponse.json({
     success: true,
     predefinedFeeds: PREDEFINED_RSS_FEEDS,
-    categories: [...new Set(PREDEFINED_RSS_FEEDS.map(f => f.category))],
+    categories: Array.from(new Set(PREDEFINED_RSS_FEEDS.map(f => f.category))),
     supportedTypes: ['rss', 'google_sheets', 'airtable', 'database'],
   });
 }

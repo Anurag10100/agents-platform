@@ -15,11 +15,15 @@ import {
   GoogleSheetsDataSource,
   AirtableDataSource,
   PREDEFINED_RSS_FEEDS,
+  RSSItem,
+  DatabaseRecord,
+  SheetRow,
+  AirtableRecord,
 } from './types';
-import { fetchRSSFeed, rssItemsToMarkdown, RSSItem } from './rss-fetcher';
-import { fetchFromSupabase, databaseRecordsToMarkdown, DatabaseRecord } from './database-connector';
-import { fetchFromGoogleSheets, fetchFromGoogleSheetsAPI, sheetRowsToMarkdown, SheetRow } from './sheets-connector';
-import { fetchFromAirtable, airtableRecordsToMarkdown, AirtableRecord } from './airtable-connector';
+import { fetchRSSFeed, rssItemsToMarkdown } from './rss-fetcher';
+import { fetchFromSupabase, databaseRecordsToMarkdown } from './database-connector';
+import { fetchFromGoogleSheets, fetchFromGoogleSheetsAPI, sheetRowsToMarkdown } from './sheets-connector';
+import { fetchFromAirtable, airtableRecordsToMarkdown } from './airtable-connector';
 
 // Unified fetch function that routes to the appropriate connector
 export async function fetchDataSource(source: DataSource): Promise<DataFetchResult> {

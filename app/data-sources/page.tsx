@@ -293,7 +293,7 @@ export default function DataSourcesPage() {
     return PREDEFINED_RSS_FEEDS.filter(f => f.category === category);
   };
 
-  const categories = [...new Set(PREDEFINED_RSS_FEEDS.map(f => f.category))];
+  const categories = Array.from(new Set(PREDEFINED_RSS_FEEDS.map(f => f.category)));
 
   if (loading) {
     return (
