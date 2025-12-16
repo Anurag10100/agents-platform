@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { skills, Skill } from './skills-data';
 import { UserPreferences } from '../lib/database.types';
 import { buildPreferencesContext } from '../lib/preferences';
+import { DataSource, DataFetchResult } from '../lib/data-sources/types';
 import styles from './page.module.css';
 
 interface UploadedFile {
@@ -123,13 +124,16 @@ export default function Home() {
   const [fetchingUrls, setFetchingUrls] = useState<Set<string>>(new Set());
   const [fetchedUrls, setFetchedUrls] = useState<Map<string, FetchedUrl>>(new Map());
   const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null);
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [dataSourceResults, setDataSourceResults] = useState<DataFetchResult[]>([]);
+  const [fetchingDataSources, setFetchingDataSources] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load user preferences on mount
+  // Load user preferences and data sources on mount
   useEffect(() => {
     const loadPreferences = async () => {
       try {
@@ -143,7 +147,54 @@ export default function Home() {
       }
     };
     loadPreferences();
+
+    // Load data sources from localStorage
+    const loadDataSources = () => {
+      try {
+        const stored = localStorage.getItem('newsletter_data_sources');
+        if (stored) {
+          const sources = JSON.parse(stored);
+          setDataSources(sources.filter((s: DataSource) => s.enabled));
+        }
+      } catch (error) {
+        console.error('Failed to load data sources:', error);
+      }
+    };
+    loadDataSources();
   }, []);
+
+  // Fetch data from enabled data sources
+  const fetchDataSources = async (): Promise<string> => {
+    const enabledSources = dataSources.filter(s => s.enabled);
+    if (enabledSources.length === 0) return '';
+
+    setFetchingDataSources(true);
+
+    try {
+      const response = await fetch('/api/data-sources', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'fetch-multiple',
+          sources: enabledSources,
+          options: { asMarkdown: true },
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setDataSourceResults(result.data);
+        return result.markdown || '';
+      }
+    } catch (error) {
+      console.error('Failed to fetch data sources:', error);
+    } finally {
+      setFetchingDataSources(false);
+    }
+
+    return '';
+  };
 
   // Auto-scroll to bottom of messages
   useEffect(() => {
@@ -407,6 +458,12 @@ export default function Home() {
     const detectedSkill = detectSkill(userMessage);
     const skill = detectedSkill || skills[0];
 
+    // Fetch real-time data from configured data sources
+    let dataSourcesContext = '';
+    if (dataSources.length > 0) {
+      dataSourcesContext = await fetchDataSources();
+    }
+
     // Build prompt
     let fullPrompt = userMessage;
 
@@ -477,6 +534,11 @@ Since you cannot access the URL content directly, please:
     // Inject user preferences into prompt
     if (preferencesContext) {
       fullPrompt = `${preferencesContext}\n${fullPrompt}`;
+    }
+
+    // Inject real-time data sources context
+    if (dataSourcesContext) {
+      fullPrompt = `${fullPrompt}\n\n---\n\n## REAL-TIME DATA FROM CONNECTED SOURCES:\nThe following data was fetched in real-time from configured data sources. Use this information to enrich your content with current news, database records, or spreadsheet data as relevant.\n\n${dataSourcesContext}`;
     }
 
     // Prepare images for API
@@ -695,6 +757,9 @@ Since you cannot access the URL content directly, please:
           </div>
         </div>
         <div className={styles.chatHeaderRight}>
+          <a href="/data-sources" className={styles.headerLink}>
+            Data Sources {dataSources.length > 0 && <span className={styles.sourceBadge}>{dataSources.length}</span>}
+          </a>
           <a href="/settings" className={styles.headerLink}>
             Settings
           </a>
@@ -835,6 +900,17 @@ Since you cannot access the URL content directly, please:
                 <div className={styles.fetchingInfo}>
                   <span className={styles.fetchingTitle}>Fetching website content...</span>
                   <span className={styles.fetchingUrl}>{Array.from(fetchingUrls)[0]}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Data Sources Fetching Indicator */}
+            {fetchingDataSources && (
+              <div className={styles.fetchingIndicator}>
+                <div className={styles.spinner} />
+                <div className={styles.fetchingInfo}>
+                  <span className={styles.fetchingTitle}>Fetching real-time data...</span>
+                  <span className={styles.fetchingUrl}>{dataSources.length} source(s) connected</span>
                 </div>
               </div>
             )}
